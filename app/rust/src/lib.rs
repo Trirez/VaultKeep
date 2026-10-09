@@ -5,4 +5,6 @@
 //! If codegen does not add it automatically, declare `mod frb_generated;` below.
 
 pub mod api;
+mod frb_generated;
 mod session;
+
