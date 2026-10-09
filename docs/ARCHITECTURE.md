@@ -35,8 +35,14 @@ KeePassXC is a C++/Qt application, so it cannot be used as a Rust library, least
 The vault is one encrypted file. The user picks its location, which can sit inside a Google Drive, OneDrive or Dropbox folder that the provider's own client syncs. The app never uploads plaintext and has no network permission. Conflict handling for edits on two devices needs the `keepass` crate's merge support, to be enabled and tested before any sync claim.
 
 ## Status
-- Verified here: Rust core, CLI, and bridge build cleanly, pass clippy with 0 warnings, and pass all 15 tests.
-- Flutter app: verified via `flutter analyze` (0 issues) and `flutter test` (all 9 unit/controller tests pass).
+- Verified here: Rust core, CLI, and bridge build cleanly, pass clippy with 0 warnings, and pass all 28 workspace tests.
+- Flutter app: verified via `flutter analyze` (0 issues) and `flutter test` (all 15 unit/controller/layout tests pass).
+- Windows integration:
+  - `flutter_rust_bridge_codegen 2.13.0` installed and code bindings generated.
+  - Native assets builder configured via `app/hook/build.dart` and `flutter_rust_bridge_hooks: 2.13.0`.
+  - `rust-toolchain.toml` set for reproducible `x86_64-pc-windows-msvc` builds.
+  - Windows runner metadata configured (application title, company name, UTF-8 resource script).
+  - Native dynamic library compilation (`rust_lib_vaultkeep.dll`) verified.
 - Features implemented and verified:
   - KDBX4 create/open/atomic save with zeroized credentials
   - Groups hierarchy & dynamic group moving on edit
