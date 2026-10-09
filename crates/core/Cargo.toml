@@ -1,0 +1,19 @@
+[package]
+name = "vaultkeep-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Platform-independent KDBX vault core shared by desktop and mobile apps"
+
+[dependencies]
+keepass.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+rand.workspace = true
+uuid.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true

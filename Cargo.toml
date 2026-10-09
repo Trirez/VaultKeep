@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/cli", "app/rust"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.89"
+
+[workspace.dependencies]
+keepass = { version = "0.15", features = ["save_kdbx4", "totp", "_merge"] }
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+rand = "0.8"
+tempfile = "3"
+uuid = "1.27.0"
+proptest = "1.6"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

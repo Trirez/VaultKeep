@@ -1,0 +1,9 @@
+/target
+*.kdbx
+*.kdbx.tmp
+*.keyx
+.env
+.dart_tool/
+build/
+/flutter/
+

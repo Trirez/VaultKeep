@@ -1,0 +1,24 @@
+name: vaultkeep
+description: Personal password manager. Flutter UI over a Rust KDBX (KeePass format) core.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+# `flutter_rust_bridge` and `rust_lib_vaultkeep` are added by
+# `flutter_rust_bridge_codegen integrate`; see docs/FLUTTER_SETUP.md.
+dependencies:
+  flutter:
+    sdk: flutter
+  path: ^1.9.0
+  path_provider: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

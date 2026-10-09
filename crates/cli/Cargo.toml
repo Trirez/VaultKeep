@@ -1,0 +1,16 @@
+[package]
+name = "vaultkeep-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Command-line frontend used to exercise and test the vault core"
+
+[[bin]]
+name = "vaultkeep"
+path = "src/main.rs"
+
+[dependencies]
+vaultkeep-core = { path = "../core" }
+rpassword = "7"
+zeroize.workspace = true

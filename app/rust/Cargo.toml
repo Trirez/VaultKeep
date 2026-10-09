@@ -1,0 +1,22 @@
+[package]
+name = "rust_lib_vaultkeep"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "flutter_rust_bridge layer exposing vaultkeep-core to the Flutter app"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+vaultkeep-core = { path = "../../crates/core" }
+zeroize.workspace = true
+uuid.workspace = true
+flutter_rust_bridge = "=2.13.0"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
