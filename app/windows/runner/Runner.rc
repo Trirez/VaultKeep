@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.vaultkeep" "\0"
-            VALUE "FileDescription", "vaultkeep_app" "\0"
+            VALUE "CompanyName", "dev.vaultkeep" "\0"
+            VALUE "FileDescription", "VaultKeep - Secure Password Manager" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "vaultkeep_app" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.vaultkeep. All rights reserved." "\0"
+            VALUE "InternalName", "vaultkeep" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 dev.vaultkeep. All rights reserved." "\0"
             VALUE "OriginalFilename", "vaultkeep_app.exe" "\0"
-            VALUE "ProductName", "vaultkeep_app" "\0"
+            VALUE "ProductName", "VaultKeep" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END
