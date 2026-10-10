@@ -67,6 +67,12 @@ void main() {
     await tester.pump();
     expect(find.text('VaultKeep'), findsOneWidget);
 
+    // Verify 1920x1080 desktop 3-pane Command-Center layout
+    tester.view.physicalSize = const Size(1920, 1080);
+    await tester.pumpAndSettle();
+    expect(find.text('Group Tree'), findsOneWidget);
+    expect(find.text('Cryptographic Entry Inspector'), findsOneWidget);
+
     await controller.lock();
     await tester.pumpWidget(const SizedBox());
   });

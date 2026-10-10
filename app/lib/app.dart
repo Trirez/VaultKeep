@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'clipboard_guard.dart';
 import 'screens/unlock_screen.dart';
 import 'screens/vault_screen.dart';
+import 'theme.dart';
 import 'vault_controller.dart';
 
 class VaultKeepApp extends StatefulWidget {
@@ -61,16 +62,14 @@ class _VaultKeepAppState extends State<VaultKeepApp>
 
   @override
   Widget build(BuildContext context) {
+    final tacticalTheme = TacticalTheme.buildTheme();
     return MaterialApp(
       title: 'VaultKeep',
       navigatorKey: _navKey,
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-      darkTheme: ThemeData(
-        colorSchemeSeed: Colors.indigo,
-        brightness: Brightness.dark,
-        useMaterial3: true,
-      ),
+      themeMode: ThemeMode.dark,
+      theme: tacticalTheme,
+      darkTheme: tacticalTheme,
       builder: (context, child) => Listener(
         behavior: HitTestBehavior.translucent,
         onPointerDown: (_) => widget.controller.touch(),
