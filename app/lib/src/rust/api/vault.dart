@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `map_summary`, `parse_id`, `session`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Create a new vault file and leave it unlocked. Fails if the file exists.
 Future<void> createVault({required String path, required String master}) =>
@@ -38,6 +38,14 @@ Future<String> revealPassword({required String id}) =>
 /// The only call that returns a TOTP seed URI. Use for edit/reveal.
 Future<String?> revealOtpUri({required String id}) =>
     RustLib.instance.api.crateApiVaultRevealOtpUri(id: id);
+
+/// The only call that returns the protected Security Answer (`VK_SECURITY_ANSWER`).
+Future<String?> revealSecurityAnswer({required String id}) =>
+    RustLib.instance.api.crateApiVaultRevealSecurityAnswer(id: id);
+
+/// The only call that returns a protected Custom Field value (`VK_CF_VAL_{index}`).
+Future<String> revealCustomField({required String id, required int index}) =>
+    RustLib.instance.api.crateApiVaultRevealCustomField(id: id, index: index);
 
 /// Add (`id == None`) or update an entry and save the vault. Returns the entry id.
 Future<String> saveEntry({String? id, required EntryData data}) =>
@@ -72,11 +80,33 @@ Future<String> generateNewPassword(
 Future<String> generateCustomPassword({required CustomPasswordPolicy policy}) =>
     RustLib.instance.api.crateApiVaultGenerateCustomPassword(policy: policy);
 
+/// Evaluates password strength and compromised advisory status inside Rust (`Zeroizing` the input).
+Future<PasswordEvaluationItem> evaluatePassword({required String password}) =>
+    RustLib.instance.api.crateApiVaultEvaluatePassword(password: password);
+
+/// Returns non-secret container metadata and Argon2id KDF parameters for the open vault.
+Future<VaultInfoItem> getVaultInfo() =>
+    RustLib.instance.api.crateApiVaultGetVaultInfo();
+
 /// Create a timestamped encrypted backup of the unlocked vault and prune backups beyond `max_backups`.
 Future<String> createVaultBackup(
         {required String backupDir, required int maxBackups}) =>
     RustLib.instance.api.crateApiVaultCreateVaultBackup(
         backupDir: backupDir, maxBackups: maxBackups);
+
+/// Lists existing encrypted KDBX4 backup snapshots in `backup_dir` (newest first).
+Future<List<String>> listVaultBackups({required String backupDir}) =>
+    RustLib.instance.api.crateApiVaultListVaultBackups(backupDir: backupDir);
+
+/// Restores the unlocked vault from an encrypted KDBX4 backup file (`backup_path`).
+Future<void> restoreVaultBackup(
+        {required String backupPath, required String backupMaster}) =>
+    RustLib.instance.api.crateApiVaultRestoreVaultBackup(
+        backupPath: backupPath, backupMaster: backupMaster);
+
+/// Verifies `current_master` in constant time, deletes the vault file on disk, and locks the session.
+Future<void> eraseVault({required String currentMaster}) =>
+    RustLib.instance.api.crateApiVaultEraseVault(currentMaster: currentMaster);
 
 Future<List<GroupItem>> listGroups() =>
     RustLib.instance.api.crateApiVaultListGroups();
@@ -148,6 +178,22 @@ Future<void> changeMasterPassword(
     RustLib.instance.api.crateApiVaultChangeMasterPassword(
         currentMaster: currentMaster, newMaster: newMaster);
 
+/// Duplicates entry `id` inside the open vault without exposing decrypted secrets to Dart.
+Future<String> duplicateEntry({required String id}) =>
+    RustLib.instance.api.crateApiVaultDuplicateEntry(id: id);
+
+/// Exports the open vault to `dest_path` (`"kdbx"` or `"csv"`) after verifying `current_master`.
+Future<int> exportVault(
+        {required String destPath,
+        required String currentMaster,
+        required String format}) =>
+    RustLib.instance.api.crateApiVaultExportVault(
+        destPath: destPath, currentMaster: currentMaster, format: format);
+
+/// Imports credentials from CSV text (`title,username,password,url,notes,category,email,otp`).
+Future<int> importCsvEntries({required String csvContent}) =>
+    RustLib.instance.api.crateApiVaultImportCsvEntries(csvContent: csvContent);
+
 class AttachmentItem {
   final String name;
   final int size;
@@ -169,6 +215,79 @@ class AttachmentItem {
           size == other.size;
 }
 
+/// Custom field input from the edit screen. Deliberately no `Debug` (it may hold a sensitive value).
+class CustomFieldData {
+  final String name;
+  final String fieldType;
+  final String section;
+  final bool sensitive;
+  final String value;
+
+  const CustomFieldData({
+    required this.name,
+    required this.fieldType,
+    required this.section,
+    required this.sensitive,
+    required this.value,
+  });
+
+  @override
+  int get hashCode =>
+      name.hashCode ^
+      fieldType.hashCode ^
+      section.hashCode ^
+      sensitive.hashCode ^
+      value.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CustomFieldData &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          fieldType == other.fieldType &&
+          section == other.section &&
+          sensitive == other.sensitive &&
+          value == other.value;
+}
+
+/// Non-secret metadata + non-sensitive value for a custom field in `EntryDetails`.
+/// Sensitive values are empty here and fetched via `reveal_custom_field`.
+class CustomFieldItem {
+  final String name;
+  final String fieldType;
+  final String section;
+  final bool sensitive;
+  final String value;
+
+  const CustomFieldItem({
+    required this.name,
+    required this.fieldType,
+    required this.section,
+    required this.sensitive,
+    required this.value,
+  });
+
+  @override
+  int get hashCode =>
+      name.hashCode ^
+      fieldType.hashCode ^
+      section.hashCode ^
+      sensitive.hashCode ^
+      value.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CustomFieldItem &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          fieldType == other.fieldType &&
+          section == other.section &&
+          sensitive == other.sensitive &&
+          value == other.value;
+}
+
 /// Advanced password generator policy exposed over FFI.
 class CustomPasswordPolicy {
   final int length;
@@ -176,6 +295,7 @@ class CustomPasswordPolicy {
   final bool digits;
   final bool symbols;
   final bool pronounceable;
+  final String separator;
   final bool allowAmbiguous;
   final bool exactMode;
   final int minUpper;
@@ -190,6 +310,7 @@ class CustomPasswordPolicy {
     required this.digits,
     required this.symbols,
     required this.pronounceable,
+    required this.separator,
     required this.allowAmbiguous,
     required this.exactMode,
     required this.minUpper,
@@ -206,6 +327,7 @@ class CustomPasswordPolicy {
       digits.hashCode ^
       symbols.hashCode ^
       pronounceable.hashCode ^
+      separator.hashCode ^
       allowAmbiguous.hashCode ^
       exactMode.hashCode ^
       minUpper.hashCode ^
@@ -224,6 +346,7 @@ class CustomPasswordPolicy {
           digits == other.digits &&
           symbols == other.symbols &&
           pronounceable == other.pronounceable &&
+          separator == other.separator &&
           allowAmbiguous == other.allowAmbiguous &&
           exactMode == other.exactMode &&
           minUpper == other.minUpper &&
@@ -233,7 +356,7 @@ class CustomPasswordPolicy {
           includeChars == other.includeChars;
 }
 
-/// Data from the edit screen. Deliberately no `Debug` (it holds a password).
+/// Data from the edit screen. Deliberately no `Debug` (it holds a password and sensitive answers).
 class EntryData {
   final String title;
   final String username;
@@ -248,6 +371,12 @@ class EntryData {
   final bool isFavorite;
   final bool isArchived;
   final bool isTrashed;
+  final String email;
+  final String phone;
+  final String securityQuestion;
+  final String? securityAnswer;
+  final List<String> sections;
+  final List<CustomFieldData> customFields;
 
   const EntryData({
     required this.title,
@@ -263,6 +392,12 @@ class EntryData {
     required this.isFavorite,
     required this.isArchived,
     required this.isTrashed,
+    required this.email,
+    required this.phone,
+    required this.securityQuestion,
+    this.securityAnswer,
+    required this.sections,
+    required this.customFields,
   });
 
   @override
@@ -279,7 +414,13 @@ class EntryData {
       tags.hashCode ^
       isFavorite.hashCode ^
       isArchived.hashCode ^
-      isTrashed.hashCode;
+      isTrashed.hashCode ^
+      email.hashCode ^
+      phone.hashCode ^
+      securityQuestion.hashCode ^
+      securityAnswer.hashCode ^
+      sections.hashCode ^
+      customFields.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -298,15 +439,25 @@ class EntryData {
           tags == other.tags &&
           isFavorite == other.isFavorite &&
           isArchived == other.isArchived &&
-          isTrashed == other.isTrashed;
+          isTrashed == other.isTrashed &&
+          email == other.email &&
+          phone == other.phone &&
+          securityQuestion == other.securityQuestion &&
+          securityAnswer == other.securityAnswer &&
+          sections == other.sections &&
+          customFields == other.customFields;
 }
 
-/// Everything about an entry except its password.
+/// Everything about an entry except its password and sensitive custom field values.
 class EntryDetails {
   final String id;
   final String title;
   final String username;
+  final String email;
   final String url;
+  final String phone;
+  final String securityQuestion;
+  final bool hasSecurityAnswer;
   final String notes;
   final String? groupId;
   final String? groupName;
@@ -328,12 +479,18 @@ class EntryDetails {
   final bool isCompromised;
   final bool isBreached;
   final bool isExpired;
+  final List<String> sections;
+  final List<CustomFieldItem> customFields;
 
   const EntryDetails({
     required this.id,
     required this.title,
     required this.username,
+    required this.email,
     required this.url,
+    required this.phone,
+    required this.securityQuestion,
+    required this.hasSecurityAnswer,
     required this.notes,
     this.groupId,
     this.groupName,
@@ -355,6 +512,8 @@ class EntryDetails {
     required this.isCompromised,
     required this.isBreached,
     required this.isExpired,
+    required this.sections,
+    required this.customFields,
   });
 
   @override
@@ -362,7 +521,11 @@ class EntryDetails {
       id.hashCode ^
       title.hashCode ^
       username.hashCode ^
+      email.hashCode ^
       url.hashCode ^
+      phone.hashCode ^
+      securityQuestion.hashCode ^
+      hasSecurityAnswer.hashCode ^
       notes.hashCode ^
       groupId.hashCode ^
       groupName.hashCode ^
@@ -383,7 +546,9 @@ class EntryDetails {
       isIdentical.hashCode ^
       isCompromised.hashCode ^
       isBreached.hashCode ^
-      isExpired.hashCode;
+      isExpired.hashCode ^
+      sections.hashCode ^
+      customFields.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -393,7 +558,11 @@ class EntryDetails {
           id == other.id &&
           title == other.title &&
           username == other.username &&
+          email == other.email &&
           url == other.url &&
+          phone == other.phone &&
+          securityQuestion == other.securityQuestion &&
+          hasSecurityAnswer == other.hasSecurityAnswer &&
           notes == other.notes &&
           groupId == other.groupId &&
           groupName == other.groupName &&
@@ -414,7 +583,9 @@ class EntryDetails {
           isIdentical == other.isIdentical &&
           isCompromised == other.isCompromised &&
           isBreached == other.isBreached &&
-          isExpired == other.isExpired;
+          isExpired == other.isExpired &&
+          sections == other.sections &&
+          customFields == other.customFields;
 }
 
 /// One row in the entry list. No secrets.
@@ -422,6 +593,7 @@ class EntryItem {
   final String id;
   final String title;
   final String username;
+  final String email;
   final String url;
   final String? groupName;
   final bool hasPasskey;
@@ -447,6 +619,7 @@ class EntryItem {
     required this.id,
     required this.title,
     required this.username,
+    required this.email,
     required this.url,
     this.groupName,
     required this.hasPasskey,
@@ -474,6 +647,7 @@ class EntryItem {
       id.hashCode ^
       title.hashCode ^
       username.hashCode ^
+      email.hashCode ^
       url.hashCode ^
       groupName.hashCode ^
       hasPasskey.hashCode ^
@@ -503,6 +677,7 @@ class EntryItem {
           id == other.id &&
           title == other.title &&
           username == other.username &&
+          email == other.email &&
           url == other.url &&
           groupName == other.groupName &&
           hasPasskey == other.hasPasskey &&
@@ -653,6 +828,38 @@ class PasskeyItem {
           userHandle == other.userHandle;
 }
 
+/// Authoritative Rust password strength evaluation result.
+class PasswordEvaluationItem {
+  final int score;
+  final String label;
+  final bool isCompromised;
+  final bool isWeak;
+
+  const PasswordEvaluationItem({
+    required this.score,
+    required this.label,
+    required this.isCompromised,
+    required this.isWeak,
+  });
+
+  @override
+  int get hashCode =>
+      score.hashCode ^
+      label.hashCode ^
+      isCompromised.hashCode ^
+      isWeak.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PasswordEvaluationItem &&
+          runtimeType == other.runtimeType &&
+          score == other.score &&
+          label == other.label &&
+          isCompromised == other.isCompromised &&
+          isWeak == other.isWeak;
+}
+
 class TotpItem {
   final String code;
   final int secondsRemaining;
@@ -676,4 +883,44 @@ class TotpItem {
           code == other.code &&
           secondsRemaining == other.secondsRemaining &&
           period == other.period;
+}
+
+/// Non-secret container and Argon2id KDF summary for `Settings -> Vaults -> VAULT INFO`.
+class VaultInfoItem {
+  final String path;
+  final int entryCount;
+  final int groupCount;
+  final int kdfIterations;
+  final int kdfMemoryMib;
+  final int kdfParallelism;
+
+  const VaultInfoItem({
+    required this.path,
+    required this.entryCount,
+    required this.groupCount,
+    required this.kdfIterations,
+    required this.kdfMemoryMib,
+    required this.kdfParallelism,
+  });
+
+  @override
+  int get hashCode =>
+      path.hashCode ^
+      entryCount.hashCode ^
+      groupCount.hashCode ^
+      kdfIterations.hashCode ^
+      kdfMemoryMib.hashCode ^
+      kdfParallelism.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VaultInfoItem &&
+          runtimeType == other.runtimeType &&
+          path == other.path &&
+          entryCount == other.entryCount &&
+          groupCount == other.groupCount &&
+          kdfIterations == other.kdfIterations &&
+          kdfMemoryMib == other.kdfMemoryMib &&
+          kdfParallelism == other.kdfParallelism;
 }

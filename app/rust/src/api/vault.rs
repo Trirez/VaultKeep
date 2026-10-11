@@ -9,8 +9,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use uuid::Uuid;
 use vaultkeep_core::{
-    generate_password, generate_password_advanced, AdvancedPasswordPolicy, EntryInput,
-    EntryMetadata, PasswordPolicy,
+    evaluate_password_strength, generate_password, generate_password_advanced,
+    AdvancedPasswordPolicy, CustomFieldInput, EntryInput, EntryMetadata, PasswordPolicy,
 };
 use zeroize::Zeroizing;
 
@@ -19,9 +19,17 @@ use crate::session::Session;
 static SESSION: Mutex<Session> = Mutex::new(Session::new());
 
 fn session() -> MutexGuard<'static, Session> {
-    SESSION
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    match SESSION.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            // Fail closed: if a panic occurred while holding the session lock,
+            // drop any potentially half-mutated open vault and return a locked session.
+            let mut guard = poisoned.into_inner();
+            guard.lock();
+            SESSION.clear_poison();
+            guard
+        }
+    }
 }
 
 fn parse_id(id: &str) -> Result<Uuid, String> {
@@ -33,6 +41,7 @@ fn map_summary(s: vaultkeep_core::EntrySummary) -> EntryItem {
         id: s.id.to_string(),
         title: s.title,
         username: s.username,
+        email: s.email,
         url: s.url,
         group_name: s.group_name,
         has_passkey: s.has_passkey,
@@ -62,6 +71,7 @@ pub struct EntryItem {
     pub id: String,
     pub title: String,
     pub username: String,
+    pub email: String,
     pub url: String,
     pub group_name: Option<String>,
     pub has_passkey: bool,
@@ -95,6 +105,46 @@ pub struct GroupItem {
     pub id: String,
     pub name: String,
     pub entry_count: u32,
+}
+
+/// Non-secret metadata + non-sensitive value for a custom field in `EntryDetails`.
+/// Sensitive values are empty here and fetched via `reveal_custom_field`.
+#[derive(Debug, Clone)]
+pub struct CustomFieldItem {
+    pub name: String,
+    pub field_type: String,
+    pub section: String,
+    pub sensitive: bool,
+    pub value: String,
+}
+
+/// Custom field input from the edit screen. Deliberately no `Debug` (it may hold a sensitive value).
+pub struct CustomFieldData {
+    pub name: String,
+    pub field_type: String,
+    pub section: String,
+    pub sensitive: bool,
+    pub value: String,
+}
+
+/// Non-secret container and Argon2id KDF summary for `Settings -> Vaults -> VAULT INFO`.
+#[derive(Debug, Clone)]
+pub struct VaultInfoItem {
+    pub path: String,
+    pub entry_count: u32,
+    pub group_count: u32,
+    pub kdf_iterations: u32,
+    pub kdf_memory_mib: u32,
+    pub kdf_parallelism: u32,
+}
+
+/// Authoritative Rust password strength evaluation result.
+#[derive(Debug, Clone)]
+pub struct PasswordEvaluationItem {
+    pub score: u32,
+    pub label: String,
+    pub is_compromised: bool,
+    pub is_weak: bool,
 }
 
 /// Non-secret metadata for a KDBX4 Passkey (`KPEX_PASSKEY_*`).
@@ -142,13 +192,17 @@ impl std::fmt::Debug for TotpItem {
     }
 }
 
-/// Everything about an entry except its password.
+/// Everything about an entry except its password and sensitive custom field values.
 #[derive(Clone)]
 pub struct EntryDetails {
     pub id: String,
     pub title: String,
     pub username: String,
+    pub email: String,
     pub url: String,
+    pub phone: String,
+    pub security_question: String,
+    pub has_security_answer: bool,
     pub notes: String,
     pub group_id: Option<String>,
     pub group_name: Option<String>,
@@ -170,6 +224,8 @@ pub struct EntryDetails {
     pub is_compromised: bool,
     pub is_breached: bool,
     pub is_expired: bool,
+    pub sections: Vec<String>,
+    pub custom_fields: Vec<CustomFieldItem>,
 }
 
 impl std::fmt::Debug for EntryDetails {
@@ -178,7 +234,11 @@ impl std::fmt::Debug for EntryDetails {
             .field("id", &self.id)
             .field("title", &self.title)
             .field("username", &self.username)
+            .field("email", &self.email)
             .field("url", &self.url)
+            .field("phone", &self.phone)
+            .field("security_question", &self.security_question)
+            .field("has_security_answer", &self.has_security_answer)
             .field("notes", &self.notes)
             .field("group_id", &self.group_id)
             .field("group_name", &self.group_name)
@@ -200,11 +260,13 @@ impl std::fmt::Debug for EntryDetails {
             .field("is_compromised", &self.is_compromised)
             .field("is_breached", &self.is_breached)
             .field("is_expired", &self.is_expired)
+            .field("sections", &self.sections)
+            .field("custom_fields", &self.custom_fields)
             .finish()
     }
 }
 
-/// Data from the edit screen. Deliberately no `Debug` (it holds a password).
+/// Data from the edit screen. Deliberately no `Debug` (it holds a password and sensitive answers).
 pub struct EntryData {
     pub title: String,
     pub username: String,
@@ -219,6 +281,12 @@ pub struct EntryData {
     pub is_favorite: bool,
     pub is_archived: bool,
     pub is_trashed: bool,
+    pub email: String,
+    pub phone: String,
+    pub security_question: String,
+    pub security_answer: Option<String>,
+    pub sections: Vec<String>,
+    pub custom_fields: Vec<CustomFieldData>,
 }
 
 /// Advanced password generator policy exposed over FFI.
@@ -229,6 +297,7 @@ pub struct CustomPasswordPolicy {
     pub digits: bool,
     pub symbols: bool,
     pub pronounceable: bool,
+    pub separator: String,
     pub allow_ambiguous: bool,
     pub exact_mode: bool,
     pub min_upper: u32,
@@ -271,7 +340,11 @@ pub fn get_entry(id: String) -> Result<EntryDetails, String> {
         id: d.id.to_string(),
         title: d.title,
         username: d.username,
+        email: d.email,
         url: d.url,
+        phone: d.phone,
+        security_question: d.security_question,
+        has_security_answer: d.has_security_answer,
         notes: d.notes,
         group_id: d.group_id.map(|g| g.to_string()),
         group_name: d.group_name,
@@ -305,6 +378,18 @@ pub fn get_entry(id: String) -> Result<EntryDetails, String> {
         is_compromised: d.is_compromised,
         is_breached: d.is_breached,
         is_expired: d.is_expired,
+        sections: d.sections,
+        custom_fields: d
+            .custom_fields
+            .into_iter()
+            .map(|cf| CustomFieldItem {
+                name: cf.name,
+                field_type: cf.field_type,
+                section: cf.section,
+                sensitive: cf.sensitive,
+                value: cf.value,
+            })
+            .collect(),
     })
 }
 
@@ -329,6 +414,22 @@ pub fn reveal_otp_uri(id: String) -> Result<Option<String>, String> {
     Ok(uri.map(|z| z.to_string()))
 }
 
+/// The only call that returns the protected Security Answer (`VK_SECURITY_ANSWER`).
+pub fn reveal_security_answer(id: String) -> Result<Option<String>, String> {
+    let ans = session()
+        .security_answer(parse_id(&id)?)
+        .map_err(|e| e.to_string())?;
+    Ok(ans.map(|z| z.to_string()))
+}
+
+/// The only call that returns a protected Custom Field value (`VK_CF_VAL_{index}`).
+pub fn reveal_custom_field(id: String, index: u32) -> Result<String, String> {
+    let val = session()
+        .custom_field_value(parse_id(&id)?, index as usize)
+        .map_err(|e| e.to_string())?;
+    Ok(val.to_string())
+}
+
 /// Add (`id == None`) or update an entry and save the vault. Returns the entry id.
 pub fn save_entry(id: Option<String>, data: EntryData) -> Result<String, String> {
     let id = id.as_deref().map(parse_id).transpose()?;
@@ -342,6 +443,22 @@ pub fn save_entry(id: Option<String>, data: EntryData) -> Result<String, String>
         group_id,
         otp: data.otp.map(Zeroizing::new),
         last_known_revision_date: data.last_known_revision_date,
+        email: data.email,
+        phone: data.phone,
+        security_question: data.security_question,
+        security_answer: data.security_answer.map(Zeroizing::new),
+        sections: data.sections,
+        custom_fields: data
+            .custom_fields
+            .into_iter()
+            .map(|cf| CustomFieldInput {
+                name: cf.name,
+                field_type: cf.field_type,
+                section: cf.section,
+                sensitive: cf.sensitive,
+                value: Zeroizing::new(cf.value),
+            })
+            .collect(),
     };
     let mut sess = session();
     let saved_id = sess.save_entry(id, &input).map_err(|e| e.to_string())?;
@@ -414,6 +531,7 @@ pub fn generate_custom_password(policy: CustomPasswordPolicy) -> Result<String, 
         digits: policy.digits,
         symbols: policy.symbols,
         pronounceable: policy.pronounceable,
+        separator: policy.separator,
         allow_ambiguous: policy.allow_ambiguous,
         exact_mode: policy.exact_mode,
         min_upper: policy.min_upper as usize,
@@ -425,10 +543,58 @@ pub fn generate_custom_password(policy: CustomPasswordPolicy) -> Result<String, 
     generate_password_advanced(&adv).map_err(|e| e.to_string())
 }
 
+/// Evaluates password strength and compromised advisory status inside Rust (`Zeroizing` the input).
+pub fn evaluate_password(password: String) -> PasswordEvaluationItem {
+    let pw = Zeroizing::new(password);
+    let (score, label, is_compromised) = evaluate_password_strength(&pw);
+    PasswordEvaluationItem {
+        score: u32::from(score),
+        label: label.to_string(),
+        is_compromised,
+        is_weak: score < 50,
+    }
+}
+
+/// Returns non-secret container metadata and Argon2id KDF parameters for the open vault.
+pub fn get_vault_info() -> Result<VaultInfoItem, String> {
+    let info = session().vault_info().map_err(|e| e.to_string())?;
+    Ok(VaultInfoItem {
+        path: info.path,
+        entry_count: info.entry_count as u32,
+        group_count: info.group_count as u32,
+        kdf_iterations: info.kdf_iterations as u32,
+        kdf_memory_mib: (info.kdf_memory_bytes / (1024 * 1024)) as u32,
+        kdf_parallelism: info.kdf_parallelism,
+    })
+}
+
 /// Create a timestamped encrypted backup of the unlocked vault and prune backups beyond `max_backups`.
 pub fn create_vault_backup(backup_dir: String, max_backups: u32) -> Result<String, String> {
     session()
         .create_backup(&backup_dir, max_backups as usize)
+        .map_err(|e| e.to_string())
+}
+
+/// Lists existing encrypted KDBX4 backup snapshots in `backup_dir` (newest first).
+pub fn list_vault_backups(backup_dir: String) -> Result<Vec<String>, String> {
+    session()
+        .list_backups(&backup_dir)
+        .map_err(|e| e.to_string())
+}
+
+/// Restores the unlocked vault from an encrypted KDBX4 backup file (`backup_path`).
+pub fn restore_vault_backup(backup_path: String, backup_master: String) -> Result<(), String> {
+    let backup_master = Zeroizing::new(backup_master);
+    session()
+        .restore_backup(&backup_path, &backup_master)
+        .map_err(|e| e.to_string())
+}
+
+/// Verifies `current_master` in constant time, deletes the vault file on disk, and locks the session.
+pub fn erase_vault(current_master: String) -> Result<(), String> {
+    let current_master = Zeroizing::new(current_master);
+    session()
+        .erase_vault(&current_master)
         .map_err(|e| e.to_string())
 }
 
@@ -578,6 +744,36 @@ pub fn change_master_password(current_master: String, new_master: String) -> Res
         .map_err(|e| e.to_string())
 }
 
+/// Duplicates entry `id` inside the open vault without exposing decrypted secrets to Dart.
+pub fn duplicate_entry(id: String) -> Result<String, String> {
+    let new_id = session()
+        .duplicate_entry(parse_id(&id)?)
+        .map_err(|e| e.to_string())?;
+    Ok(new_id.to_string())
+}
+
+/// Exports the open vault to `dest_path` (`"kdbx"` or `"csv"`) after verifying `current_master`.
+pub fn export_vault(
+    dest_path: String,
+    current_master: String,
+    format: String,
+) -> Result<u32, String> {
+    let current_master = Zeroizing::new(current_master);
+    let count = session()
+        .export_vault(&dest_path, &current_master, &format)
+        .map_err(|e| e.to_string())?;
+    Ok(count as u32)
+}
+
+/// Imports credentials from CSV text (`title,username,password,url,notes,category,email,otp`).
+pub fn import_csv_entries(csv_content: String) -> Result<u32, String> {
+    let csv_content = Zeroizing::new(csv_content);
+    let count = session()
+        .import_csv(&csv_content)
+        .map_err(|e| e.to_string())?;
+    Ok(count as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +793,27 @@ mod tests {
             is_favorite: false,
             is_archived: false,
             is_trashed: false,
+            email: "kingshuk@example.com".into(),
+            phone: "+1-555-0100".into(),
+            security_question: "First pet?".into(),
+            security_answer: Some("Fluffy".into()),
+            sections: vec!["ADDITIONAL DETAILS".into()],
+            custom_fields: vec![
+                CustomFieldData {
+                    name: "Department".into(),
+                    value: "Platform".into(),
+                    field_type: "text".into(),
+                    sensitive: false,
+                    section: String::new(),
+                },
+                CustomFieldData {
+                    name: "Recovery PIN".into(),
+                    value: "9942".into(),
+                    field_type: "password".into(),
+                    sensitive: true,
+                    section: "ADDITIONAL DETAILS".into(),
+                },
+            ],
         }
     }
 
@@ -624,6 +841,7 @@ mod tests {
         let id = save_entry(None, entry_input).unwrap();
         let found = list_entries("git".into()).unwrap();
         assert_eq!(found.len(), 1);
+        assert_eq!(found[0].email, "kingshuk@example.com");
         assert!(found[0].passkey_supported);
         assert!(!found[0].has_passkey);
         assert!(found[0].has_totp);
@@ -644,6 +862,18 @@ mod tests {
 
         let details = get_entry(id.clone()).unwrap();
         assert_eq!(details.notes, "n");
+        assert_eq!(details.email, "kingshuk@example.com");
+        assert_eq!(details.phone, "+1-555-0100");
+        assert_eq!(details.security_question, "First pet?");
+        assert!(details.has_security_answer);
+        assert_eq!(details.sections, vec!["ADDITIONAL DETAILS".to_string()]);
+        assert_eq!(details.custom_fields.len(), 2);
+        assert_eq!(details.custom_fields[0].name, "Department");
+        assert_eq!(details.custom_fields[0].value, "Platform");
+        assert!(!details.custom_fields[0].sensitive);
+        assert_eq!(details.custom_fields[1].name, "Recovery PIN");
+        assert_eq!(details.custom_fields[1].value, ""); // omitted when sensitive!
+        assert!(details.custom_fields[1].sensitive);
         assert_eq!(details.group_id, Some(gid));
         assert_eq!(details.group_name.as_deref(), Some("Engineering"));
         assert!(details.has_otp);
@@ -654,7 +884,19 @@ mod tests {
         assert_eq!(details.tags, vec!["work".to_string(), "cloud".to_string()]);
         assert!(details.is_favorite);
         assert_eq!(reveal_password(id.clone()).unwrap(), "pw-1");
+        assert_eq!(
+            reveal_security_answer(id.clone()).unwrap().as_deref(),
+            Some("Fluffy")
+        );
+        assert_eq!(reveal_custom_field(id.clone(), 0).unwrap(), "Platform");
+        assert_eq!(reveal_custom_field(id.clone(), 1).unwrap(), "9942");
         assert!(reveal_otp_uri(id.clone()).unwrap().is_some());
+
+        // Vault info check
+        let vinfo = get_vault_info().unwrap();
+        assert_eq!(vinfo.entry_count, 1);
+        assert!(vinfo.kdf_iterations > 0);
+        assert!(vinfo.kdf_memory_mib > 0);
 
         // Generate & authenticate passkey on Windows and Android through the bridge API
         let pk = generate_entry_passkey(id.clone(), String::new(), String::new()).unwrap();
@@ -732,10 +974,12 @@ mod tests {
         save_entry(Some(id.clone()), fresh).unwrap();
         assert_eq!(reveal_password(id.clone()).unwrap(), "pw-2");
 
-        // Test backup through bridge API
+        // Test backup, list, and restore through bridge API
         let bdir = dir.path().join("backups").to_string_lossy().into_owned();
-        let bfile = create_vault_backup(bdir, 5).unwrap();
+        let bfile = create_vault_backup(bdir.clone(), 5).unwrap();
         assert!(std::path::Path::new(&bfile).exists());
+        let backups = list_vault_backups(bdir).unwrap();
+        assert_eq!(backups.len(), 1);
 
         // Rotate master password
         assert!(change_master_password("wrong-current".into(), "new-master".into()).is_err());
@@ -745,14 +989,43 @@ mod tests {
         lock_vault();
         assert!(!is_unlocked());
         assert_eq!(list_entries(String::new()).unwrap_err(), "vault is locked");
-        assert!(unlock_vault(path.clone(), master).is_err());
+        assert!(unlock_vault(path.clone(), master.clone()).is_err());
         assert!(!is_unlocked());
 
-        unlock_vault(path, new_master).unwrap();
+        unlock_vault(path.clone(), new_master.clone()).unwrap();
         assert_eq!(reveal_password(id.clone()).unwrap(), "pw-2");
-        delete_entry(id).unwrap();
+        delete_entry(id.clone()).unwrap();
         assert!(list_entries(String::new()).unwrap().is_empty());
-        lock_vault();
+
+        // Restore from backup (which was encrypted with the original master password)
+        restore_vault_backup(bfile, master.clone()).unwrap();
+        assert_eq!(list_entries(String::new()).unwrap().len(), 1);
+        assert_eq!(reveal_password(id.clone()).unwrap(), "pw-2");
+
+        // Test duplicate_entry, export_vault, and import_csv_entries through bridge API
+        let dup_id = duplicate_entry(id).unwrap();
+        assert_eq!(get_entry(dup_id.clone()).unwrap().title, "GitHub - Copy");
+        assert_eq!(reveal_password(dup_id).unwrap(), "pw-2");
+
+        let export_csv_path = dir.path().join("export.csv").to_string_lossy().into_owned();
+        assert!(export_vault(export_csv_path.clone(), "wrong-master".into(), "csv".into()).is_err());
+        let exp_count = export_vault(export_csv_path, new_master.clone(), "csv".into()).unwrap();
+        assert_eq!(exp_count, 2);
+
+        let imp_count = import_csv_entries(
+            "title,username,password,url,notes,category,email\nProtonMail,pm_user,pm_pass_123,https://proton.me,note,Login,pm@proton.me\n".into(),
+        )
+        .unwrap();
+        assert_eq!(imp_count, 1);
+        assert_eq!(list_entries("ProtonMail".into()).unwrap().len(), 1);
+
+        // Test erase_vault (rejects wrong master password, succeeds on right master password)
+        assert!(erase_vault("wrong-master".into()).is_err());
+        assert!(erase_vault(master).is_err());
+        assert!(is_unlocked());
+        erase_vault(new_master).unwrap();
+        assert!(!is_unlocked());
+        assert!(!std::path::Path::new(&path).exists());
 
         assert_eq!(
             get_entry("not-a-uuid".into()).unwrap_err(),
@@ -772,8 +1045,49 @@ mod tests {
             min_symbols: 2,
             exclude_chars: String::new(),
             include_chars: String::new(),
+            separator: "-".into(),
         })
         .unwrap();
         assert_eq!(custom_pw.len(), 16);
+
+        let pron_pw = generate_custom_password(CustomPasswordPolicy {
+            length: 15,
+            uppercase: true,
+            digits: true,
+            symbols: false,
+            pronounceable: true,
+            allow_ambiguous: false,
+            exact_mode: false,
+            min_upper: 0,
+            min_digits: 0,
+            min_symbols: 0,
+            exclude_chars: String::new(),
+            include_chars: String::new(),
+            separator: ".".into(),
+        })
+        .unwrap();
+        assert!(pron_pw.contains('.'));
+
+        let eval = evaluate_password(custom_pw);
+        assert!(eval.score >= 3);
+        assert!(!eval.label.is_empty());
+
+        // SEC-004 regression check: poisoning SESSION while unlocked fails closed (locks the vault)
+        let poison_path = dir.path().join("poison.kdbx").to_str().unwrap().to_string();
+        create_vault(poison_path, "poison-master-password".into()).unwrap();
+        assert!(is_unlocked());
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = SESSION.lock().unwrap();
+            panic!("simulated panic while holding SESSION lock");
+        });
+        assert!(SESSION.is_poisoned());
+        assert!(
+            !is_unlocked(),
+            "poisoned SESSION must fail closed and drop the open vault"
+        );
+        assert!(
+            !SESSION.is_poisoned(),
+            "poison flag must be cleared after fail-closed lock"
+        );
     }
 }

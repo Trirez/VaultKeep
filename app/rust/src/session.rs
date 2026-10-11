@@ -2,30 +2,46 @@ use uuid::Uuid;
 use vaultkeep_core::{EntryDetails, EntryInput, EntrySummary, Vault, VaultError};
 use zeroize::Zeroizing;
 
-/// Holds the single open vault. Dropping the vault zeroizes its master password.
+/// Holds the single open vault and its session-scoped WebAuthn challenge factory.
+/// Dropping the vault zeroizes its master password.
 pub(crate) struct Session {
     vault: Option<Vault>,
+    challenge_factory: Option<vaultkeep_core::PasskeyChallengeFactory>,
 }
 
 impl Session {
     pub(crate) const fn new() -> Self {
-        Self { vault: None }
+        Self {
+            vault: None,
+            challenge_factory: None,
+        }
     }
 
     pub(crate) fn create(&mut self, path: &str, master: &str) -> Result<(), VaultError> {
-        self.vault = None;
-        self.vault = Some(Vault::create(path, master)?);
+        self.lock();
+        let v = Vault::create(path, master)?;
+        let factory = vaultkeep_core::PasskeyChallengeFactory::new(
+            vaultkeep_core::PasskeyTokenConfig::default(),
+        )?;
+        self.vault = Some(v);
+        self.challenge_factory = Some(factory);
         Ok(())
     }
 
     pub(crate) fn unlock(&mut self, path: &str, master: &str) -> Result<(), VaultError> {
-        self.vault = None;
-        self.vault = Some(Vault::open(path, master)?);
+        self.lock();
+        let v = Vault::open(path, master)?;
+        let factory = vaultkeep_core::PasskeyChallengeFactory::new(
+            vaultkeep_core::PasskeyTokenConfig::default(),
+        )?;
+        self.vault = Some(v);
+        self.challenge_factory = Some(factory);
         Ok(())
     }
 
     pub(crate) fn lock(&mut self) {
         self.vault = None;
+        self.challenge_factory = None;
     }
 
     pub(crate) fn is_unlocked(&self) -> bool {
@@ -170,9 +186,7 @@ impl Session {
         } else {
             origin.to_owned()
         };
-        let factory = vaultkeep_core::PasskeyChallengeFactory::new(
-            vaultkeep_core::PasskeyTokenConfig::default(),
-        )?;
+        let factory = self.challenge_factory.as_ref().ok_or(VaultError::Locked)?;
         let now_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -187,7 +201,7 @@ impl Session {
             platform,
             &effective_origin,
             &token,
-            &factory,
+            factory,
             now_unix,
             vaultkeep_core::UserVerificationRequirement::Preferred,
             user_verified,
@@ -229,6 +243,66 @@ impl Session {
     ) -> Result<String, VaultError> {
         let p = self.vault()?.create_backup(backup_dir, max_backups)?;
         Ok(p.to_string_lossy().into_owned())
+    }
+
+    pub(crate) fn list_backups(&self, backup_dir: &str) -> Result<Vec<String>, VaultError> {
+        let _ = self.vault()?;
+        let list = Vault::list_backups(backup_dir)?;
+        Ok(list
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect())
+    }
+
+    pub(crate) fn restore_backup(
+        &mut self,
+        backup_path: &str,
+        backup_master: &str,
+    ) -> Result<(), VaultError> {
+        self.vault_mut()?.restore_backup(backup_path, backup_master)
+    }
+
+    pub(crate) fn erase_vault(&mut self, current_master: &str) -> Result<(), VaultError> {
+        self.vault()?.erase_vault_file(current_master)?;
+        self.lock();
+        Ok(())
+    }
+
+    pub(crate) fn security_answer(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<Zeroizing<String>>, VaultError> {
+        self.vault()?.security_answer(id)
+    }
+
+    pub(crate) fn custom_field_value(
+        &self,
+        id: Uuid,
+        index: usize,
+    ) -> Result<Zeroizing<String>, VaultError> {
+        self.vault()?.custom_field_value(id, index)
+    }
+
+    pub(crate) fn vault_info(&self) -> Result<vaultkeep_core::VaultInfo, VaultError> {
+        Ok(self.vault()?.vault_info())
+    }
+
+    pub(crate) fn duplicate_entry(&mut self, id: Uuid) -> Result<Uuid, VaultError> {
+        self.vault_mut()?.duplicate_entry(id)
+    }
+
+    pub(crate) fn export_vault(
+        &self,
+        dest_path: &str,
+        current_master: &str,
+        format: &str,
+    ) -> Result<usize, VaultError> {
+        self.vault()?
+            .export_vault_file(dest_path, current_master, format)
+    }
+
+    pub(crate) fn import_csv(&mut self, csv_content: &str) -> Result<usize, VaultError> {
+        self.vault_mut()?.import_csv(csv_content)
     }
 }
 
