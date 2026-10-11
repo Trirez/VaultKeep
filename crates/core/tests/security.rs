@@ -8,7 +8,7 @@ use tempfile::tempdir;
 use zeroize::Zeroizing;
 
 use vaultkeep_core::{
-    generate_password, EntryInput, KdfParams, PasswordPolicy, Vault, VaultError,
+    generate_password, CustomFieldInput, EntryInput, KdfParams, PasswordPolicy, Vault, VaultError,
     MAX_ATTACHMENT_BYTES, MAX_VAULT_BYTES,
 };
 
@@ -24,6 +24,12 @@ fn sample_entry(title: &str, user: &str, pw: &str) -> EntryInput {
             "otpauth://totp/Ex:user?secret=JBSWY3DPEHPK3PXP&period=30&digits=6".into(),
         )),
         last_known_revision_date: None,
+        email: String::new(),
+        phone: String::new(),
+        security_question: String::new(),
+        security_answer: None,
+        sections: Vec::new(),
+        custom_fields: Vec::new(),
     }
 }
 
@@ -222,6 +228,8 @@ fn input_bounds_enforce_file_and_attachment_limits() {
 fn secrets_never_leak_in_debug_and_error_representations() {
     let secret_pw = "TOP_SECRET_PASSWORD_12345!@#";
     let secret_otp = "otpauth://totp/Sec:user?secret=SUPERSECRETSEED2FA";
+    let secret_ans = "SECRET_MOTHER_MAIDEN_NAME_999";
+    let secret_cf = "SECRET_CUSTOM_PIN_4455";
 
     let input = EntryInput {
         title: "TestTitle".into(),
@@ -232,6 +240,18 @@ fn secrets_never_leak_in_debug_and_error_representations() {
         group_id: None,
         otp: Some(Zeroizing::new(secret_otp.into())),
         last_known_revision_date: None,
+        email: "user@secure.example".into(),
+        phone: "+1-555-0100".into(),
+        security_question: "Maiden name?".into(),
+        security_answer: Some(Zeroizing::new(secret_ans.into())),
+        sections: vec!["PRIVATE".into()],
+        custom_fields: vec![CustomFieldInput {
+            name: "Vault PIN".into(),
+            value: Zeroizing::new(secret_cf.into()),
+            field_type: "password".into(),
+            sensitive: true,
+            section: "PRIVATE".into(),
+        }],
     };
 
     let input_debug = format!("{input:?}");
@@ -242,6 +262,14 @@ fn secrets_never_leak_in_debug_and_error_representations() {
     assert!(
         !input_debug.contains("SUPERSECRETSEED2FA"),
         "EntryInput debug leaked OTP secret"
+    );
+    assert!(
+        !input_debug.contains(secret_ans),
+        "EntryInput debug leaked security answer"
+    );
+    assert!(
+        !input_debug.contains(secret_cf),
+        "EntryInput debug leaked sensitive custom field"
     );
     assert!(
         input_debug.contains("[REDACTED]"),

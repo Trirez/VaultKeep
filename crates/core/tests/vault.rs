@@ -1,4 +1,6 @@
-use vaultkeep_core::{generate_password, EntryInput, KdfParams, PasswordPolicy, Vault, VaultError};
+use vaultkeep_core::{
+    generate_password, CustomFieldInput, EntryInput, KdfParams, PasswordPolicy, Vault, VaultError,
+};
 
 fn input(title: &str, user: &str, pw: &str) -> EntryInput {
     EntryInput {
@@ -10,6 +12,12 @@ fn input(title: &str, user: &str, pw: &str) -> EntryInput {
         group_id: None,
         otp: None,
         last_known_revision_date: None,
+        email: String::new(),
+        phone: String::new(),
+        security_question: String::new(),
+        security_answer: None,
+        sections: Vec::new(),
+        custom_fields: Vec::new(),
     }
 }
 
@@ -1212,3 +1220,234 @@ fn windows_and_android_passkey_ceremonies_and_adversarial_checks() {
     assert!(removed);
     assert!(v.details(gh_id).unwrap().passkey.is_none());
 }
+
+#[test]
+fn enpass_structured_fields_custom_fields_and_backup_restore_erase() {
+    use zeroize::Zeroizing;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("structured.kdbx");
+    let backup_dir = dir.path().join("Backups");
+
+    let mut v = Vault::create(&path, "master-key").unwrap();
+
+    let mut entry = input("Chase Bank", "alice_banking", "BankPass#99");
+    entry.email = "alice@banking.example".into();
+    entry.phone = "+1-800-555-0199".into();
+    entry.security_question = "Mother's maiden name?".into();
+    entry.security_answer = Some(Zeroizing::new("SECRET_ANSWER_8821".into()));
+    entry.sections = vec!["WIRE DETAILS".into(), "RECOVERY".into()];
+    entry.custom_fields = vec![
+        CustomFieldInput {
+            name: "Routing Number".into(),
+            value: Zeroizing::new("021000021".into()),
+            field_type: "text".into(),
+            sensitive: false,
+            section: "WIRE DETAILS".into(),
+        },
+        CustomFieldInput {
+            name: "Telebanking PIN".into(),
+            value: Zeroizing::new("PIN_SECRET_7744".into()),
+            field_type: "password".into(),
+            sensitive: true,
+            section: "RECOVERY".into(),
+        },
+    ];
+
+    let id = v.add(&entry).unwrap();
+    v.save().unwrap();
+
+    // Ensure neither security answer nor sensitive custom field value appears in plaintext on disk
+    let raw_bytes = std::fs::read(&path).unwrap();
+    let raw_str = String::from_utf8_lossy(&raw_bytes);
+    assert!(!raw_str.contains("SECRET_ANSWER_8821"));
+    assert!(!raw_str.contains("PIN_SECRET_7744"));
+
+    // Reopen from disk and verify round-trip persistence
+    drop(v);
+    let mut v = Vault::open(&path, "master-key").unwrap();
+
+    // Search matches email, phone, security_question, and non-sensitive custom field value
+    assert_eq!(v.search("alice@banking.example").len(), 1);
+    assert_eq!(v.search("800-555-0199").len(), 1);
+    assert_eq!(v.search("maiden").len(), 1);
+    assert_eq!(v.search("021000021").len(), 1);
+
+    let details = v.details(id).unwrap();
+    assert_eq!(details.email, "alice@banking.example");
+    assert_eq!(details.phone, "+1-800-555-0199");
+    assert_eq!(details.security_question, "Mother's maiden name?");
+    assert!(details.has_security_answer);
+    assert_eq!(
+        details.sections,
+        vec!["WIRE DETAILS".to_string(), "RECOVERY".to_string()]
+    );
+    assert_eq!(details.custom_fields.len(), 2);
+    assert_eq!(details.custom_fields[0].name, "Routing Number");
+    assert_eq!(details.custom_fields[0].value, "021000021");
+    assert!(!details.custom_fields[0].sensitive);
+    assert_eq!(details.custom_fields[1].name, "Telebanking PIN");
+    assert_eq!(details.custom_fields[1].value, ""); // omitted from summary because sensitive == true
+    assert!(details.custom_fields[1].sensitive);
+
+    // Reveal protected values
+    assert_eq!(
+        v.security_answer(id)
+            .unwrap()
+            .as_deref()
+            .map(|s| s.as_str()),
+        Some("SECRET_ANSWER_8821")
+    );
+    assert_eq!(v.custom_field_value(id, 0).unwrap().as_str(), "021000021");
+    assert_eq!(
+        v.custom_field_value(id, 1).unwrap().as_str(),
+        "PIN_SECRET_7744"
+    );
+    assert!(v.custom_field_value(id, 99).is_err());
+
+    // Update entry with security_answer: None -> preserves existing security answer!
+    let mut upd = input("Chase Bank", "alice_banking", "BankPass#99");
+    upd.email = "alice@banking.example".into();
+    upd.security_question = "Mother's maiden name?".into();
+    upd.security_answer = None; // preserve existing
+    upd.custom_fields = vec![CustomFieldInput {
+        name: "Single Field".into(),
+        value: Zeroizing::new("val".into()),
+        field_type: "text".into(),
+        sensitive: false,
+        section: String::new(),
+    }];
+    v.update(id, &upd).unwrap();
+    v.save().unwrap();
+    assert_eq!(
+        v.security_answer(id)
+            .unwrap()
+            .as_deref()
+            .map(|s| s.as_str()),
+        Some("SECRET_ANSWER_8821")
+    );
+    assert_eq!(v.details(id).unwrap().custom_fields.len(), 1);
+    // Old index 1 must have been cleaned up
+    assert!(v.custom_field_value(id, 1).is_err());
+
+    // Vault info check
+    let info = v.vault_info();
+    assert_eq!(info.entry_count, 1);
+    assert_eq!(info.kdf_iterations, 6);
+
+    // Backup list & restore (SEC-007: unrelated .kdbx files in backup_dir are ignored)
+    let bpath = v.create_backup(&backup_dir, 5).unwrap();
+    std::fs::write(backup_dir.join("other_keepass.kdbx"), b"decoy").unwrap();
+    let listed = Vault::list_backups(&backup_dir).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0], bpath);
+
+    // Mutate current vault (remove entry), then restore from backup
+    v.remove(id).unwrap();
+    v.save().unwrap();
+    assert!(v.search("").is_empty());
+
+    // Wrong password for backup restore must fail without corrupting active vault
+    assert!(v.restore_backup(&bpath, "wrong-password").is_err());
+    v.restore_backup(&bpath, "master-key").unwrap();
+    assert_eq!(v.search("").len(), 1);
+
+    // Erase vault file: wrong master password must fail
+    assert!(matches!(
+        v.erase_vault_file("wrong-password"),
+        Err(VaultError::InvalidMasterPassword)
+    ));
+    assert!(path.exists());
+
+    v.erase_vault_file("master-key").unwrap();
+    assert!(!path.exists());
+}
+
+#[test]
+fn duplicate_export_and_import_csv_roundtrip_and_adversarial_checks() {
+    use zeroize::Zeroizing;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("menu_ops.kdbx");
+    let mut v = Vault::create(&path, "master-secret").unwrap();
+
+    // 1. Add an entry with protected custom fields, security answer, and attachment, then duplicate it
+    let mut item = input("GitHub Enterprise", "octocat", "DupPass#2026!");
+    item.email = "octocat@github.com".into();
+    item.security_question = "Favorite repo?".into();
+    item.security_answer = Some(Zeroizing::new("linux".into()));
+    item.custom_fields = vec![CustomFieldInput {
+        name: "PAT Token".into(),
+        value: Zeroizing::new("ghp_secret_999".into()),
+        field_type: "password".into(),
+        sensitive: true,
+        section: "API".into(),
+    }];
+    let orig_id = v.add(&item).unwrap();
+    v.add_attachment(orig_id, "recovery.txt", b"codes-123").unwrap();
+    v.save().unwrap();
+
+    // Adversarial: duplicating nonexistent UUID must fail with NotFound
+    assert!(matches!(
+        v.duplicate_entry(uuid::Uuid::nil()),
+        Err(VaultError::NotFound)
+    ));
+
+    let dup_id = v.duplicate_entry(orig_id).unwrap();
+    assert_ne!(dup_id, orig_id);
+    assert_eq!(dup_id.get_version_num(), 7);
+    let dup_details = v.details(dup_id).unwrap();
+    assert_eq!(dup_details.title, "GitHub Enterprise - Copy");
+    assert_eq!(dup_details.username, "octocat");
+    assert_eq!(dup_details.email, "octocat@github.com");
+    assert_eq!(v.password(dup_id).unwrap().as_str(), "DupPass#2026!");
+    assert_eq!(
+        v.security_answer(dup_id)
+            .unwrap()
+            .as_deref()
+            .map(|s| s.as_str()),
+        Some("linux")
+    );
+    assert_eq!(
+        v.custom_field_value(dup_id, 0).unwrap().as_str(),
+        "ghp_secret_999"
+    );
+    assert_eq!(
+        v.get_attachment(dup_id, "recovery.txt").unwrap(),
+        b"codes-123"
+    );
+
+    // 2. Export checks (adversarial: wrong master password & self-path overwrite rejected)
+    let export_kdbx = dir.path().join("exported.kdbx");
+    let export_csv = dir.path().join("exported.csv");
+    assert!(matches!(
+        v.export_vault_file(&export_kdbx, "wrong-master", "kdbx"),
+        Err(VaultError::InvalidMasterPassword)
+    ));
+    assert!(matches!(
+        v.export_vault_file(&path, "master-secret", "kdbx"),
+        Err(VaultError::SelfMerge)
+    ));
+
+    let kdbx_count = v
+        .export_vault_file(&export_kdbx, "master-secret", "kdbx")
+        .unwrap();
+    assert_eq!(kdbx_count, 2);
+    let reopened = Vault::open(&export_kdbx, "master-secret").unwrap();
+    assert_eq!(reopened.search("").len(), 2);
+
+    let csv_count = v
+        .export_vault_file(&export_csv, "master-secret", "csv")
+        .unwrap();
+    assert_eq!(csv_count, 2);
+    let csv_text = std::fs::read_to_string(&export_csv).unwrap();
+
+    // 3. Import CSV into a fresh vault
+    let imported_path = dir.path().join("imported.kdbx");
+    let mut v2 = Vault::create(&imported_path, "import-master").unwrap();
+    let imported_n = v2.import_csv(&csv_text).unwrap();
+    assert_eq!(imported_n, 2);
+    let hits = v2.search("GitHub Enterprise");
+    assert_eq!(hits.len(), 2);
+}
+

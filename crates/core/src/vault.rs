@@ -34,6 +34,62 @@ const VK_ARCHIVED: &str = "VK_ARCHIVED";
 const VK_TRASHED: &str = "VK_TRASHED";
 const VK_COMPROMISED: &str = "VK_COMPROMISED";
 const VK_EXPIRED: &str = "VK_EXPIRED";
+const VK_EMAIL: &str = "VK_EMAIL";
+const VK_PHONE: &str = "VK_PHONE";
+const VK_SECURITY_QUESTION: &str = "VK_SECURITY_QUESTION";
+const VK_SECURITY_ANSWER: &str = "VK_SECURITY_ANSWER";
+const VK_SECTIONS: &str = "VK_SECTIONS";
+const VK_CF_COUNT: &str = "VK_CF_COUNT";
+
+/// Enpass-compatible custom field input. Sensitive values are wrapped in `Zeroizing`
+/// and persisted as KDBX4 `Value::Protected` (ChaCha20 inner stream encrypted).
+#[derive(Clone, PartialEq, Eq)]
+pub struct CustomFieldInput {
+    pub name: String,
+    pub field_type: String,
+    pub section: String,
+    pub sensitive: bool,
+    pub value: Zeroizing<String>,
+}
+
+impl fmt::Debug for CustomFieldInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let val: &str = if self.sensitive {
+            "[REDACTED]"
+        } else {
+            self.value.as_str()
+        };
+        f.debug_struct("CustomFieldInput")
+            .field("name", &self.name)
+            .field("field_type", &self.field_type)
+            .field("section", &self.section)
+            .field("sensitive", &self.sensitive)
+            .field("value", &val)
+            .finish()
+    }
+}
+
+/// Non-secret metadata + non-sensitive value for a custom field returned in `EntryDetails`.
+/// When `sensitive == true`, `value` is empty here and fetched only via `Vault::custom_field_value`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomFieldSummary {
+    pub name: String,
+    pub field_type: String,
+    pub section: String,
+    pub sensitive: bool,
+    pub value: String,
+}
+
+/// Non-secret vault container and KDF summary for `Settings -> Vaults -> VAULT INFO`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultInfo {
+    pub path: String,
+    pub entry_count: usize,
+    pub group_count: usize,
+    pub kdf_iterations: u64,
+    pub kdf_memory_bytes: u64,
+    pub kdf_parallelism: u32,
+}
 
 /// Enpass-compatible item organization and lifecycle metadata stored in KDBX4 custom fields.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -155,6 +211,12 @@ pub struct EntryInput {
     /// When `Some`, `Vault::update` verifies that the entry's stored `revision_date`
     /// has not diverged by more than 1 second before overwriting state.
     pub last_known_revision_date: Option<i64>,
+    pub email: String,
+    pub phone: String,
+    pub security_question: String,
+    pub security_answer: Option<Zeroizing<String>>,
+    pub sections: Vec<String>,
+    pub custom_fields: Vec<CustomFieldInput>,
 }
 
 impl fmt::Debug for EntryInput {
@@ -168,6 +230,15 @@ impl fmt::Debug for EntryInput {
             .field("group_id", &self.group_id)
             .field("otp", &self.otp.as_ref().map(|_| "[REDACTED]"))
             .field("last_known_revision_date", &self.last_known_revision_date)
+            .field("email", &self.email)
+            .field("phone", &self.phone)
+            .field("security_question", &self.security_question)
+            .field(
+                "security_answer",
+                &self.security_answer.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("sections", &self.sections)
+            .field("custom_fields", &self.custom_fields)
             .finish()
     }
 }
@@ -178,6 +249,7 @@ pub struct EntrySummary {
     pub id: Uuid,
     pub title: String,
     pub username: String,
+    pub email: String,
     pub url: String,
     pub group_name: Option<String>,
     pub has_passkey: bool,
@@ -206,7 +278,11 @@ pub struct EntryDetails {
     pub id: Uuid,
     pub title: String,
     pub username: String,
+    pub email: String,
     pub url: String,
+    pub phone: String,
+    pub security_question: String,
+    pub has_security_answer: bool,
     pub notes: String,
     pub group_id: Option<Uuid>,
     pub group_name: Option<String>,
@@ -228,6 +304,8 @@ pub struct EntryDetails {
     pub is_compromised: bool,
     pub is_breached: bool,
     pub is_expired: bool,
+    pub sections: Vec<String>,
+    pub custom_fields: Vec<CustomFieldSummary>,
 }
 
 impl fmt::Debug for EntryDetails {
@@ -236,7 +314,11 @@ impl fmt::Debug for EntryDetails {
             .field("id", &self.id)
             .field("title", &self.title)
             .field("username", &self.username)
+            .field("email", &self.email)
             .field("url", &self.url)
+            .field("phone", &self.phone)
+            .field("security_question", &self.security_question)
+            .field("has_security_answer", &self.has_security_answer)
             .field("notes", &self.notes)
             .field("group_id", &self.group_id)
             .field("group_name", &self.group_name)
@@ -258,6 +340,8 @@ impl fmt::Debug for EntryDetails {
             .field("is_compromised", &self.is_compromised)
             .field("is_breached", &self.is_breached)
             .field("is_expired", &self.is_expired)
+            .field("sections", &self.sections)
+            .field("custom_fields", &self.custom_fields)
             .finish()
     }
 }
@@ -493,13 +577,26 @@ impl Vault {
         Ok(())
     }
 
-    /// Case-insensitive match on title, username, URL, group name, category, or tags. Empty query lists all.
+    /// Case-insensitive match on title, username, email, URL, phone, notes, group name, category, tags, or custom fields. Empty query lists all.
     pub fn search(&self, query: &str) -> Vec<EntrySummary> {
         let q = query.to_lowercase();
+        let mut pw_digest_counts: std::collections::HashMap<[u8; 32], usize> =
+            std::collections::HashMap::new();
+        for e in self.db.iter_all_entries() {
+            if !extract_bool(&e, VK_TRASHED) {
+                let pw = e.get_password().unwrap_or_default();
+                if !pw.is_empty() {
+                    let digest = ring::digest::digest(&ring::digest::SHA256, pw.as_bytes());
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(digest.as_ref());
+                    *pw_digest_counts.entry(arr).or_insert(0) += 1;
+                }
+            }
+        }
         let mut out: Vec<EntrySummary> = self
             .db
             .iter_all_entries()
-            .map(|e| {
+            .filter_map(|e| {
                 let parent = e.parent();
                 let group_name = if parent.name.is_empty() {
                     None
@@ -508,7 +605,39 @@ impl Vault {
                 };
                 let title = e.get_title().unwrap_or_default().to_owned();
                 let username = e.get_username().unwrap_or_default().to_owned();
+                let email = e.get(VK_EMAIL).unwrap_or_default().to_owned();
                 let url = e.get_url().unwrap_or_default().to_owned();
+                let phone = e.get(VK_PHONE).unwrap_or_default();
+                let notes = e.get(fields::NOTES).unwrap_or_default();
+                let sec_q = e.get(VK_SECURITY_QUESTION).unwrap_or_default();
+                let custom_fields = extract_custom_fields(&e);
+                let category = extract_category(&e, group_name.as_deref());
+                let tags = extract_tags(&e);
+
+                let matches_query = q.is_empty()
+                    || title.to_lowercase().contains(&q)
+                    || username.to_lowercase().contains(&q)
+                    || email.to_lowercase().contains(&q)
+                    || url.to_lowercase().contains(&q)
+                    || phone.to_lowercase().contains(&q)
+                    || notes.to_lowercase().contains(&q)
+                    || sec_q.to_lowercase().contains(&q)
+                    || category.to_lowercase().contains(&q)
+                    || tags.iter().any(|t| t.to_lowercase().contains(&q))
+                    || group_name
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(&q)
+                    || custom_fields.iter().any(|cf| {
+                        cf.name.to_lowercase().contains(&q)
+                            || (!cf.sensitive && cf.value.to_lowercase().contains(&q))
+                    });
+
+                if !matches_query {
+                    return None;
+                }
+
                 let has_passkey = extract_passkey(&e).is_some();
                 let passkey_supported = is_passkey_supported(&title, &url, has_passkey);
                 let has_totp = e
@@ -516,8 +645,6 @@ impl Vault {
                     .map(|s| !s.trim().is_empty())
                     .unwrap_or(false);
                 let revision_date = entry_revision_date(&e);
-                let category = extract_category(&e, group_name.as_deref());
-                let tags = extract_tags(&e);
                 let is_favorite = extract_bool(&e, VK_FAVORITE);
                 let is_archived = extract_bool(&e, VK_ARCHIVED);
                 let is_trashed = extract_bool(&e, VK_TRASHED);
@@ -531,19 +658,16 @@ impl Vault {
                 let is_compromised = auto_compromised || extract_bool(&e, VK_COMPROMISED);
                 let is_breached = is_compromised;
                 let is_expired = extract_bool(&e, VK_EXPIRED) || is_entry_expired(&e);
-                let is_identical = !is_trashed
-                    && !pw.is_empty()
-                    && self.db.iter_all_entries().any(|other| {
-                        other.id() != e.id() && !extract_bool(&other, VK_TRASHED) && {
-                            let opw = other.get_password().unwrap_or_default();
-                            !opw.is_empty() && constant_time_eq(pw.as_bytes(), opw.as_bytes())
-                        }
-                    });
+                let is_identical = !is_trashed && !pw.is_empty() && {
+                    let digest = ring::digest::digest(&ring::digest::SHA256, pw.as_bytes());
+                    pw_digest_counts.get(digest.as_ref()).copied().unwrap_or(0) > 1
+                };
 
-                EntrySummary {
+                Some(EntrySummary {
                     id: e.id().uuid(),
                     title,
                     username,
+                    email,
                     url,
                     group_name,
                     has_passkey,
@@ -564,27 +688,14 @@ impl Vault {
                     is_compromised,
                     is_breached,
                     is_expired,
-                }
-            })
-            .filter(|s| {
-                q.is_empty()
-                    || s.title.to_lowercase().contains(&q)
-                    || s.username.to_lowercase().contains(&q)
-                    || s.url.to_lowercase().contains(&q)
-                    || s.category.to_lowercase().contains(&q)
-                    || s.tags.iter().any(|t| t.to_lowercase().contains(&q))
-                    || s.group_name
-                        .as_deref()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .contains(&q)
+                })
             })
             .collect();
         out.sort_by_key(|a| a.title.to_lowercase());
         out
     }
 
-    /// Non-secret fields of one entry (the password is fetched separately).
+    /// Non-secret fields of one entry (passwords and sensitive custom fields are fetched separately).
     pub fn details(&self, id: Uuid) -> Result<EntryDetails, VaultError> {
         let eid = self.find(id)?;
         let e = self.db.entry(eid).ok_or(VaultError::NotFound)?;
@@ -614,6 +725,15 @@ impl Vault {
             .collect();
         let title = field(fields::TITLE);
         let url = field(fields::URL);
+        let email = field(VK_EMAIL);
+        let phone = field(VK_PHONE);
+        let security_question = field(VK_SECURITY_QUESTION);
+        let has_security_answer = e
+            .get(VK_SECURITY_ANSWER)
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        let sections = extract_sections(&e);
+        let custom_fields = extract_custom_fields(&e);
         let passkey = extract_passkey(&e);
         let passkey_supported = is_passkey_supported(&title, &url, passkey.is_some());
         let revision_date = entry_revision_date(&e);
@@ -644,7 +764,11 @@ impl Vault {
             id,
             title,
             username: field(fields::USERNAME),
+            email,
             url,
+            phone,
+            security_question,
+            has_security_answer,
             notes: field(fields::NOTES),
             group_id,
             group_name,
@@ -666,6 +790,8 @@ impl Vault {
             is_compromised,
             is_breached,
             is_expired,
+            sections,
+            custom_fields,
         })
     }
 
@@ -686,6 +812,47 @@ impl Vault {
         Ok(e.get_raw_otp_value()
             .filter(|s| !s.trim().is_empty())
             .map(|s| Zeroizing::new(s.to_string())))
+    }
+
+    /// Fetch the protected Security Answer (`VK_SECURITY_ANSWER`) only when explicitly requested.
+    pub fn security_answer(&self, id: Uuid) -> Result<Option<Zeroizing<String>>, VaultError> {
+        let eid = self.find(id)?;
+        let e = self.db.entry(eid).ok_or(VaultError::NotFound)?;
+        Ok(e.get(VK_SECURITY_ANSWER)
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| Zeroizing::new(s.to_owned())))
+    }
+
+    /// Fetch the value of a custom field at `index` (especially for `sensitive == true` fields).
+    pub fn custom_field_value(
+        &self,
+        id: Uuid,
+        index: usize,
+    ) -> Result<Zeroizing<String>, VaultError> {
+        let eid = self.find(id)?;
+        let e = self.db.entry(eid).ok_or(VaultError::NotFound)?;
+        let count = e
+            .get(VK_CF_COUNT)
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        if index >= count {
+            return Err(VaultError::Policy("custom field index out of bounds"));
+        }
+        let key = format!("VK_CF_VAL_{index}");
+        Ok(Zeroizing::new(e.get(&key).unwrap_or_default().to_owned()))
+    }
+
+    /// Returns non-secret container metadata and Argon2id KDF parameters for `Settings -> Vaults -> VAULT INFO`.
+    pub fn vault_info(&self) -> VaultInfo {
+        let kdf = self.kdf_params().unwrap_or_default();
+        VaultInfo {
+            path: self.path.to_string_lossy().into_owned(),
+            entry_count: self.db.iter_all_entries().count(),
+            group_count: self.list_groups().len(),
+            kdf_iterations: kdf.iterations,
+            kdf_memory_bytes: kdf.memory_bytes,
+            kdf_parallelism: kdf.parallelism,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -1502,6 +1669,294 @@ impl Vault {
         Ok(backup_path)
     }
 
+    /// Lists existing encrypted KDBX4 backup snapshots in `backup_dir` (newest first).
+    pub fn list_backups(backup_dir: impl AsRef<Path>) -> Result<Vec<PathBuf>, VaultError> {
+        let backup_dir = backup_dir.as_ref();
+        if !backup_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut backups: Vec<PathBuf> = fs::read_dir(backup_dir)?
+            .filter_map(|res| res.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.starts_with("vaultkeep_backup_") && s.ends_with(".kdbx"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        backups.sort_by(|a, b| b.cmp(a));
+        Ok(backups)
+    }
+
+    /// Restores the active vault from an encrypted KDBX4 backup file (`backup_path`).
+    /// If `backup_master` is empty, uses the active vault's master password.
+    pub fn restore_backup(
+        &mut self,
+        backup_path: impl AsRef<Path>,
+        backup_master: &str,
+    ) -> Result<(), VaultError> {
+        let effective_master = if backup_master.is_empty() {
+            &self.master
+        } else {
+            backup_master
+        };
+        let restored = Vault::open(backup_path, effective_master)?;
+        save_db_to(&restored.db, &self.path, &self.master)?;
+        self.db = restored.db;
+        Ok(())
+    }
+
+    /// Verifies `current_master` in constant time, overwrites the encrypted KDBX4 vault file
+    /// with zeros (best-effort on-disk scrubbing), syncs to disk, and removes the file.
+    pub fn erase_vault_file(&self, current_master: &str) -> Result<(), VaultError> {
+        if !constant_time_eq(self.master.as_bytes(), current_master.as_bytes()) {
+            return Err(VaultError::InvalidMasterPassword);
+        }
+        if self.path.exists() {
+            if let Ok(len) = fs::metadata(&self.path).map(|m| m.len()) {
+                if let Ok(mut f) = fs::OpenOptions::new().write(true).open(&self.path) {
+                    let zeros = [0u8; 8192];
+                    let mut remaining = len.min(MAX_VAULT_BYTES);
+                    while remaining > 0 {
+                        let chunk = (remaining as usize).min(zeros.len());
+                        if f.write_all(&zeros[..chunk]).is_err() {
+                            break;
+                        }
+                        remaining -= chunk as u64;
+                    }
+                    let _ = f.sync_all();
+                }
+            }
+            fs::remove_file(&self.path)?;
+        }
+        Ok(())
+    }
+
+    /// Duplicates an existing entry (`id`) inside the vault using a sequential `Uuid::now_v7()`,
+    /// copying all fields, protected secrets (`password`, `otp`, `security_answer`, sensitive custom fields),
+    /// metadata (`category`, `tags`, `is_favorite`), group assignment, and protected attachments
+    /// without exposing decrypted secrets across the FFI boundary.
+    pub fn duplicate_entry(&mut self, id: Uuid) -> Result<Uuid, VaultError> {
+        let details = self.details(id)?;
+        let password = self.password(id)?;
+        let otp = self.otp_uri(id)?;
+        let security_answer = self.security_answer(id)?;
+
+        let mut custom_fields = Vec::with_capacity(details.custom_fields.len());
+        for (idx, cf) in details.custom_fields.iter().enumerate() {
+            let val = if cf.sensitive {
+                self.custom_field_value(id, idx)?
+            } else {
+                Zeroizing::new(cf.value.clone())
+            };
+            custom_fields.push(CustomFieldInput {
+                name: cf.name.clone(),
+                field_type: cf.field_type.clone(),
+                section: cf.section.clone(),
+                sensitive: cf.sensitive,
+                value: val,
+            });
+        }
+
+        let mut copied_attachments = Vec::with_capacity(details.attachments.len());
+        for att in &details.attachments {
+            let bytes = self.get_attachment(id, &att.name)?;
+            copied_attachments.push((att.name.clone(), Zeroizing::new(bytes)));
+        }
+
+        let copy_title = if details.title.trim().is_empty() {
+            "Copy".to_owned()
+        } else {
+            format!("{} - Copy", details.title)
+        };
+
+        let input = EntryInput {
+            title: copy_title,
+            username: details.username,
+            password,
+            url: details.url,
+            notes: details.notes,
+            group_id: details.group_id,
+            otp,
+            last_known_revision_date: None,
+            email: details.email,
+            phone: details.phone,
+            security_question: details.security_question,
+            security_answer,
+            sections: details.sections,
+            custom_fields,
+        };
+
+        let new_id = self.add(&input)?;
+        let meta = EntryMetadata {
+            category: details.category,
+            tags: details.tags,
+            is_favorite: details.is_favorite,
+            is_archived: false,
+            is_trashed: false,
+            is_compromised: details.is_compromised,
+            is_expired: details.is_expired,
+        };
+        self.set_entry_metadata(new_id, &meta)?;
+        for (att_name, att_bytes) in copied_attachments {
+            self.add_attachment(new_id, &att_name, &att_bytes)?;
+        }
+        self.save()?;
+        Ok(new_id)
+    }
+
+    /// Exports the vault to `dest_path` after verifying `current_master` in constant time.
+    /// Supported `format` values: `"kdbx"` (encrypted KDBX4 copy) or `"csv"` (UTF-8 CSV export).
+    /// Returns the number of exported entries.
+    pub fn export_vault_file(
+        &self,
+        dest_path: impl AsRef<Path>,
+        current_master: &str,
+        format: &str,
+    ) -> Result<usize, VaultError> {
+        if !constant_time_eq(self.master.as_bytes(), current_master.as_bytes()) {
+            return Err(VaultError::InvalidMasterPassword);
+        }
+        let dest_path = dest_path.as_ref();
+        if self.is_same_path(dest_path) {
+            return Err(VaultError::SelfMerge);
+        }
+        if let Some(parent) = dest_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        let fmt_norm = format.trim().to_ascii_lowercase();
+        if fmt_norm == "csv" {
+            let mut buf = Zeroizing::new(String::from(
+                "title,username,password,url,notes,category,email\n",
+            ));
+            let mut count = 0usize;
+            for e in self.db.iter_all_entries() {
+                if extract_bool(&e, VK_TRASHED) {
+                    continue;
+                }
+                let parent = e.parent();
+                let group_name = if parent.name.is_empty() {
+                    None
+                } else {
+                    Some(parent.name.as_str())
+                };
+                let title = e.get_title().unwrap_or_default();
+                let username = e.get_username().unwrap_or_default();
+                let password = e.get_password().unwrap_or_default();
+                let url = e.get_url().unwrap_or_default();
+                let notes = e.get(fields::NOTES).unwrap_or_default();
+                let category = extract_category(&e, group_name);
+                let email = e.get(VK_EMAIL).unwrap_or_default();
+
+                buf.push_str(&escape_csv_field(title));
+                buf.push(',');
+                buf.push_str(&escape_csv_field(username));
+                buf.push(',');
+                buf.push_str(&escape_csv_field(password));
+                buf.push(',');
+                buf.push_str(&escape_csv_field(url));
+                buf.push(',');
+                buf.push_str(&escape_csv_field(notes));
+                buf.push(',');
+                buf.push_str(&escape_csv_field(&category));
+                buf.push(',');
+                buf.push_str(&escape_csv_field(email));
+                buf.push('\n');
+                count += 1;
+            }
+
+            let parent = dest_path.parent().unwrap_or_else(|| Path::new("."));
+            let mut tmp_file = tempfile::Builder::new()
+                .prefix(".vaultkeep_export_")
+                .suffix(".tmp")
+                .tempfile_in(parent)?;
+            tmp_file.write_all(buf.as_bytes())?;
+            tmp_file.as_file().sync_all()?;
+            tmp_file.persist(dest_path).map_err(|e| e.error)?;
+            Ok(count)
+        } else {
+            save_db_to(&self.db, dest_path, &self.master)?;
+            Ok(self.db.iter_all_entries().count())
+        }
+    }
+
+    /// Imports credentials from CSV text (`title,username,password,url,notes,category,email,otp`).
+    /// Assigns sequential `Uuid::now_v7()` identifiers and persists atomically to KDBX4.
+    pub fn import_csv(&mut self, csv_content: &str) -> Result<usize, VaultError> {
+        let mut imported = 0usize;
+        for (line_idx, raw_line) in csv_content.lines().enumerate() {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let cols = parse_csv_row(trimmed);
+            if cols.is_empty() {
+                continue;
+            }
+            // Skip standard header row if present on first non-empty line
+            if line_idx == 0 {
+                let first_lower = cols[0].trim().to_ascii_lowercase();
+                if first_lower == "title" || first_lower == "name" {
+                    continue;
+                }
+            }
+            let title = cols.first().map(|s| s.trim()).unwrap_or_default();
+            let username = cols.get(1).map(|s| s.trim()).unwrap_or_default();
+            let password = cols.get(2).map(|s| s.as_str()).unwrap_or_default();
+            let url = cols.get(3).map(|s| s.trim()).unwrap_or_default();
+            let notes = cols.get(4).map(|s| s.trim()).unwrap_or_default();
+            let category = cols.get(5).map(|s| s.trim()).unwrap_or_default();
+            let email = cols.get(6).map(|s| s.trim()).unwrap_or_default();
+            let otp = cols
+                .get(7)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| Zeroizing::new(s.to_owned()));
+
+            if title.is_empty() && username.is_empty() && password.is_empty() && url.is_empty() {
+                continue;
+            }
+
+            let input = EntryInput {
+                title: if title.is_empty() {
+                    "Imported Item".to_owned()
+                } else {
+                    title.to_owned()
+                },
+                username: username.to_owned(),
+                password: Zeroizing::new(password.to_owned()),
+                url: url.to_owned(),
+                notes: notes.to_owned(),
+                group_id: None,
+                otp,
+                last_known_revision_date: None,
+                email: email.to_owned(),
+                phone: String::new(),
+                security_question: String::new(),
+                security_answer: None,
+                sections: Vec::new(),
+                custom_fields: Vec::new(),
+            };
+            let new_id = self.add(&input)?;
+            if !category.is_empty() {
+                let meta = EntryMetadata {
+                    category: category.to_owned(),
+                    ..Default::default()
+                };
+                self.set_entry_metadata(new_id, &meta)?;
+            }
+            imported += 1;
+        }
+        if imported > 0 {
+            self.save()?;
+        }
+        Ok(imported)
+    }
+
     fn find(&self, id: Uuid) -> Result<EntryId, VaultError> {
         self.db
             .iter_all_entries()
@@ -1509,6 +1964,43 @@ impl Vault {
             .map(|e| e.id())
             .ok_or(VaultError::NotFound)
     }
+}
+
+fn escape_csv_field(field: &str) -> String {
+    if field.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_owned()
+    }
+}
+
+fn parse_csv_row(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    current.push('"');
+                    let _ = chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '"' {
+            in_quotes = true;
+        } else if ch == ',' {
+            fields.push(std::mem::take(&mut current));
+        } else {
+            current.push(ch);
+        }
+    }
+    fields.push(current);
+    fields
 }
 
 fn set_or_remove_bool(entry: &mut keepass::db::EntryTrack<'_>, key: &str, value: bool) {
@@ -1978,14 +2470,9 @@ fn save_db_to(db: &Database, dest: &Path, master: &str) -> Result<(), VaultError
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = (a.len() != b.len()) as u8;
-    // Iterate over the longer slice to avoid timing differences based on length.
-    for i in 0..std::cmp::max(a.len(), b.len()) {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(0);
-        diff |= x ^ y;
-    }
-    diff == 0
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"VAULTKEEP_CT_EQ_V1");
+    let tag_a = ring::hmac::sign(&key, a);
+    ring::hmac::verify(&key, b, tag_a.as_ref()).is_ok() && a.len() == b.len()
 }
 
 fn entry_revision_date(entry: &keepass::db::EntryRef<'_>) -> Option<i64> {
@@ -2030,6 +2517,54 @@ fn bump_location_time(prev: &Times, current: &mut Times) {
     current.location_changed = Some(next);
 }
 
+fn extract_sections(entry: &keepass::db::EntryRef<'_>) -> Vec<String> {
+    let raw = entry.get(VK_SECTIONS).unwrap_or_default();
+    let parsed: Vec<String> = raw
+        .lines()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parsed.is_empty() {
+        vec!["ADDITIONAL DETAILS".to_owned(), "Section".to_owned()]
+    } else {
+        parsed
+    }
+}
+
+fn extract_custom_fields(entry: &keepass::db::EntryRef<'_>) -> Vec<CustomFieldSummary> {
+    let count = entry
+        .get(VK_CF_COUNT)
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(128);
+    let mut out = Vec::with_capacity(count);
+    for idx in 0..count {
+        let meta_key = format!("VK_CF_META_{idx}");
+        let val_key = format!("VK_CF_VAL_{idx}");
+        let Some(meta_raw) = entry.get(&meta_key) else {
+            continue;
+        };
+        let mut parts = meta_raw.splitn(4, '\t');
+        let name = parts.next().unwrap_or("Custom Field").to_owned();
+        let field_type = parts.next().unwrap_or("Text").to_owned();
+        let section = parts.next().unwrap_or("Section").to_owned();
+        let sensitive = matches!(parts.next().unwrap_or("0"), "1" | "true");
+        let value = if sensitive {
+            String::new()
+        } else {
+            entry.get(&val_key).unwrap_or_default().to_owned()
+        };
+        out.push(CustomFieldSummary {
+            name,
+            field_type,
+            section,
+            sensitive,
+            value,
+        });
+    }
+    out
+}
+
 fn apply_initial(entry: &mut keepass::db::EntryMut<'_>, input: &EntryInput) {
     entry.set_unprotected(fields::TITLE, input.title.as_str());
     entry.set_unprotected(fields::USERNAME, input.username.as_str());
@@ -2041,6 +2576,62 @@ fn apply_initial(entry: &mut keepass::db::EntryMut<'_>, input: &EntryInput) {
             entry.fields.remove(fields::OTP);
         } else {
             entry.set_protected(fields::OTP, otp.as_str());
+        }
+    }
+    if input.email.trim().is_empty() {
+        entry.fields.remove(VK_EMAIL);
+    } else {
+        entry.set_unprotected(VK_EMAIL, input.email.trim());
+    }
+    if input.phone.trim().is_empty() {
+        entry.fields.remove(VK_PHONE);
+    } else {
+        entry.set_unprotected(VK_PHONE, input.phone.trim());
+    }
+    if input.security_question.trim().is_empty() {
+        entry.fields.remove(VK_SECURITY_QUESTION);
+    } else {
+        entry.set_unprotected(VK_SECURITY_QUESTION, input.security_question.trim());
+    }
+    if let Some(ref ans) = input.security_answer {
+        if ans.trim().is_empty() {
+            entry.fields.remove(VK_SECURITY_ANSWER);
+        } else {
+            entry.set_protected(VK_SECURITY_ANSWER, ans.as_str());
+        }
+    }
+    let cleaned_sections: Vec<String> = input
+        .sections
+        .iter()
+        .map(|s| s.trim().replace('\n', " "))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if cleaned_sections.is_empty() {
+        entry.fields.remove(VK_SECTIONS);
+    } else {
+        entry.set_unprotected(VK_SECTIONS, cleaned_sections.join("\n").as_str());
+    }
+    if input.custom_fields.is_empty() {
+        entry.fields.remove(VK_CF_COUNT);
+    } else {
+        let count = input.custom_fields.len().min(128);
+        entry.set_unprotected(VK_CF_COUNT, count.to_string().as_str());
+        for (idx, cf) in input.custom_fields.iter().take(count).enumerate() {
+            let meta_key = format!("VK_CF_META_{idx}");
+            let val_key = format!("VK_CF_VAL_{idx}");
+            let meta_val = format!(
+                "{}\t{}\t{}\t{}",
+                cf.name.replace(['\t', '\n'], " "),
+                cf.field_type.replace(['\t', '\n'], " "),
+                cf.section.replace(['\t', '\n'], " "),
+                if cf.sensitive { "1" } else { "0" }
+            );
+            entry.set_unprotected(&meta_key, meta_val.as_str());
+            if cf.sensitive {
+                entry.set_protected(&val_key, cf.value.as_str());
+            } else {
+                entry.set_unprotected(&val_key, cf.value.as_str());
+            }
         }
     }
 }
@@ -2056,6 +2647,67 @@ fn apply_tracked(entry: &mut keepass::db::EntryTrack<'_>, input: &EntryInput) {
             entry.fields.remove(fields::OTP);
         } else {
             entry.set_protected(fields::OTP, otp.as_str());
+        }
+    }
+    if input.email.trim().is_empty() {
+        entry.fields.remove(VK_EMAIL);
+    } else {
+        entry.set_unprotected(VK_EMAIL, input.email.trim());
+    }
+    if input.phone.trim().is_empty() {
+        entry.fields.remove(VK_PHONE);
+    } else {
+        entry.set_unprotected(VK_PHONE, input.phone.trim());
+    }
+    if input.security_question.trim().is_empty() {
+        entry.fields.remove(VK_SECURITY_QUESTION);
+    } else {
+        entry.set_unprotected(VK_SECURITY_QUESTION, input.security_question.trim());
+    }
+    if let Some(ref ans) = input.security_answer {
+        if ans.trim().is_empty() {
+            entry.fields.remove(VK_SECURITY_ANSWER);
+        } else {
+            entry.set_protected(VK_SECURITY_ANSWER, ans.as_str());
+        }
+    }
+    let cleaned_sections: Vec<String> = input
+        .sections
+        .iter()
+        .map(|s| s.trim().replace('\n', " "))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if cleaned_sections.is_empty() {
+        entry.fields.remove(VK_SECTIONS);
+    } else {
+        entry.set_unprotected(VK_SECTIONS, cleaned_sections.join("\n").as_str());
+    }
+
+    for idx in 0..128 {
+        entry.fields.remove(&format!("VK_CF_META_{idx}"));
+        entry.fields.remove(&format!("VK_CF_VAL_{idx}"));
+    }
+    if input.custom_fields.is_empty() {
+        entry.fields.remove(VK_CF_COUNT);
+    } else {
+        let count = input.custom_fields.len().min(128);
+        entry.set_unprotected(VK_CF_COUNT, count.to_string().as_str());
+        for (idx, cf) in input.custom_fields.iter().take(count).enumerate() {
+            let meta_key = format!("VK_CF_META_{idx}");
+            let val_key = format!("VK_CF_VAL_{idx}");
+            let meta_val = format!(
+                "{}\t{}\t{}\t{}",
+                cf.name.replace(['\t', '\n'], " "),
+                cf.field_type.replace(['\t', '\n'], " "),
+                cf.section.replace(['\t', '\n'], " "),
+                if cf.sensitive { "1" } else { "0" }
+            );
+            entry.set_unprotected(&meta_key, meta_val.as_str());
+            if cf.sensitive {
+                entry.set_protected(&val_key, cf.value.as_str());
+            } else {
+                entry.set_unprotected(&val_key, cf.value.as_str());
+            }
         }
     }
 }

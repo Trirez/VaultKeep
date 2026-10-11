@@ -12,9 +12,7 @@ fn details_return_fields_without_password() {
             password: "pw".to_string().into(),
             url: "https://mail.example".into(),
             notes: "backup codes in safe".into(),
-            group_id: None,
-            otp: None,
-            last_known_revision_date: None,
+            ..Default::default()
         })
         .unwrap();
 

@@ -21,7 +21,7 @@ pub use passkey::{
     COSE_ALG_ES256, MAX_ROR_UNIQUE_LABELS, VAULTKEEP_AAGUID,
 };
 pub use vault::{
-    is_passkey_supported, is_two_fa_supported, AttachmentSummary, EntryDetails, EntryInput,
-    EntryMetadata, EntrySummary, GroupSummary, KdfParams, PasskeySummary, TotpToken, Vault,
-    MAX_ATTACHMENT_BYTES, MAX_VAULT_BYTES,
+    is_passkey_supported, is_two_fa_supported, AttachmentSummary, CustomFieldInput,
+    CustomFieldSummary, EntryDetails, EntryInput, EntryMetadata, EntrySummary, GroupSummary,
+    KdfParams, PasskeySummary, TotpToken, Vault, VaultInfo, MAX_ATTACHMENT_BYTES, MAX_VAULT_BYTES,
 };

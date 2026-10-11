@@ -75,6 +75,7 @@ impl Default for PasswordPolicy {
 pub struct AdvancedPasswordPolicy {
     pub length: usize,
     pub pronounceable: bool,
+    pub separator: String,
     pub lower: bool,
     pub upper: bool,
     pub digits: bool,
@@ -95,6 +96,7 @@ impl Default for AdvancedPasswordPolicy {
         Self {
             length: 32,
             pronounceable: false,
+            separator: "-".to_owned(),
             lower: true,
             upper: true,
             digits: true,
@@ -335,18 +337,26 @@ fn generate_pronounceable(
         ));
     }
 
+    let explicit_sep = policy
+        .separator
+        .as_bytes()
+        .first()
+        .copied()
+        .filter(|b| b.is_ascii_graphic() || *b == b' ');
+
     let mut out: Vec<u8> = Vec::with_capacity(policy.length);
     let mut use_consonant = true;
     while out.len() < policy.length {
-        if policy.symbols
-            && !symbol_set.is_empty()
-            && out.len() > 2
-            && out.len() + 2 < policy.length
-            && out.len() % 5 == 4
-        {
-            out.push(symbol_set[rng.gen_range(0..symbol_set.len())]);
-            use_consonant = true;
-            continue;
+        if out.len() > 2 && out.len() + 2 < policy.length && out.len() % 5 == 4 {
+            if let Some(sep_byte) = explicit_sep {
+                out.push(sep_byte);
+                use_consonant = true;
+                continue;
+            } else if policy.symbols && !symbol_set.is_empty() {
+                out.push(symbol_set[rng.gen_range(0..symbol_set.len())]);
+                use_consonant = true;
+                continue;
+            }
         }
         let ch = if use_consonant {
             consonants[rng.gen_range(0..consonants.len())]
@@ -369,7 +379,8 @@ fn generate_pronounceable(
         let last_idx = out.len() - 1;
         out[last_idx] = digit_set[rng.gen_range(0..digit_set.len())];
     }
-    if policy.symbols
+    if explicit_sep.is_none()
+        && policy.symbols
         && !symbol_set.is_empty()
         && out.len() >= 3
         && !out.iter().any(|b| symbol_set.contains(b))
