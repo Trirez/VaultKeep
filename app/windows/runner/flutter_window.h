@@ -10,7 +10,7 @@
 
 #include "win32_window.h"
 
-// A window that does nothing but host a Flutter view.
+// A window that hosts a Flutter view and manages Windows system integration.
 class FlutterWindow : public Win32Window {
  public:
   // Creates a new FlutterWindow hosting a Flutter view running |project|.
@@ -26,6 +26,11 @@ class FlutterWindow : public Win32Window {
 
  private:
   void RegisterPasskeyChannel();
+  void UpdateSystemTrayIcon(bool enabled);
+  void RemoveSystemTrayIcon();
+  void ShowTrayContextMenu();
+  void UpdateStartupRegistryKey(bool enable);
+  flutter::EncodableMap ReadSystemThemeInfo();
 
   // The project to run.
   flutter::DartProject project_;
@@ -33,9 +38,15 @@ class FlutterWindow : public Win32Window {
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
 
-  // Native Windows WebAuthn (webauthn.dll) capability & settings channel.
+  // Native Windows WebAuthn, Windows Hello, DPAPI, Theme & Tray channel.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> passkey_channel_;
+
+  bool minimize_to_tray_ = false;
+  bool hide_dock_icon_ = false;
+  bool tray_icon_added_ = false;
+  bool force_closing_ = false;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
+
 
