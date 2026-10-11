@@ -26,6 +26,21 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Android 14+ (API 34+) Native Passkey & Credential Manager Provider -->
+        <service
+            android:name=".VaultKeepCredentialProviderService"
+            android:enabled="true"
+            android:exported="true"
+            android:label="VaultKeep Passkeys"
+            android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.credentials.CredentialProviderService" />
+                <action android:name="android.service.credentials.system.CredentialProviderService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.credentials.provider"
+                android:resource="@xml/credential_provider" />
+        </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

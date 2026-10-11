@@ -6,10 +6,10 @@ description: Implements or reviews Rust code for a password manager's cryptograp
 # Rust Vault Security
 
 ## Before changing code
-1. Read `docs/THREAT_MODEL_TEMPLATE.md`, `docs/SECURITY_RULES.md`, and the vault format/crypto design.
+1. Read `docs/THREAT_MODEL.md`, `docs/SECURITY_RULES.md`, `docs/SECURITY_AUDIT_LOG.md`, and `docs/NEXT_STEPS.md`.
 2. Inspect current dependencies and API boundaries.
-3. If no approved crypto design exists, stop before implementing cryptographic primitives. Propose a design review first.
-4. State assumptions and identify whether the change affects file compatibility or key rotation.
+3. VaultKeep uses the standard KDBX4 format via the `keepass 0.15` crate (`crates/core`). Do not roll custom cryptography or add a second encryption layer on top of KDBX4 without an explicit threat-model design review.
+4. State assumptions and identify whether the change affects KeePassXC KDBX4 compatibility.
 
 ## Implementation rules
 - Use maintained, reviewed crates and standard constructions; never invent algorithms.

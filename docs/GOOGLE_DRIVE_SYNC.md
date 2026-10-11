@@ -14,19 +14,17 @@ VaultKeep features a zero-knowledge cloud synchronization engine designed to syn
 
 ---
 
-## 🔄 Two Modes of Operation
+## 🔄 Modes of Operation (Current vs. Planned M6)
 
-### 1. Built-in Sandbox Simulation Mode (Default)
-To allow testing immediately without setting up OAuth client IDs and cloud consoles:
-- VaultKeep includes a local sandbox simulation engine.
-- Simulates Google Drive cloud storage in `[Documents]/VaultKeep_GoogleDrive_Cloud/`.
-- Fully tests the upload, timestamp comparisons, remote download, and 3-way KDBX merge conflicts.
+### 1. Local Cloud-Folder & Sandbox 3-Way Merge (Implemented — Zero Network Permissions)
+VaultKeep currently operates with **zero network permissions** (`android.permission.INTERNET` is omitted):
+- Users select a replica `.kdbx` file inside a locally synced Google Drive, OneDrive, or Dropbox folder (or use the built-in `[Documents]/VaultKeep_GoogleDrive_Cloud/` sandbox directory).
+- `Vault::sync_with_file` (`merge_vault` in the Flutter bridge) performs an offline 3-way KDBX merge in Rust and atomically updates both the active vault and the replica file.
 
-### 2. Live Google Drive API v3 Mode
-To sync with real Google Drive accounts:
-1. Obtain an OAuth 2.0 Access Token with the `https://www.googleapis.com/auth/drive.file` scope.
-2. Enter your account email and access token in the **Google Drive Sync** screen.
-3. VaultKeep will query `https://www.googleapis.com/drive/v3/files` and manage multipart ciphertext uploads and updates.
+### 2. Direct Google Drive API v3 OAuth Adapter (Planned — Milestone M6 Only)
+Direct HTTP/OAuth synchronization is intentionally **deferred to Milestone M6** (after local reliability and backup/restore verification in M0–M5; see `docs/NEXT_STEPS.md` and `.agents/skills/encrypted-cloud-sync/SKILL.md`):
+1. Will use OAuth 2.0 with PKCE and least-privilege scope (`drive.file` or `appDataFolder`).
+2. Will store tokens in OS-protected storage and enforce remote revision/ETag checks before replacing local files.
 
 ---
 

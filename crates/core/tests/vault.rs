@@ -1,4 +1,4 @@
-use vaultkeep_core::{generate_password, EntryInput, PasswordPolicy, Vault, VaultError};
+use vaultkeep_core::{generate_password, EntryInput, KdfParams, PasswordPolicy, Vault, VaultError};
 
 fn input(title: &str, user: &str, pw: &str) -> EntryInput {
     EntryInput {
@@ -9,6 +9,7 @@ fn input(title: &str, user: &str, pw: &str) -> EntryInput {
         notes: String::new(),
         group_id: None,
         otp: None,
+        last_known_revision_date: None,
     }
 }
 
@@ -18,7 +19,7 @@ fn roundtrip_persists_entries() {
     let path = dir.path().join("v.kdbx");
 
     let mut v = Vault::create(&path, "correct horse").unwrap();
-    let id = v.add(&input("GitHub", "kingshuk", "s3cret!"));
+    let id = v.add(&input("GitHub", "kingshuk", "s3cret!")).unwrap();
     v.save().unwrap();
     drop(v);
 
@@ -58,7 +59,7 @@ fn update_and_remove() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("v.kdbx");
     let mut v = Vault::create(&path, "m").unwrap();
-    let id = v.add(&input("Mail", "a", "old"));
+    let id = v.add(&input("Mail", "a", "old")).unwrap();
     v.update(id, &input("Mail", "a", "new")).unwrap();
     assert_eq!(v.password(id).unwrap().as_str(), "new");
     v.remove(id).unwrap();
@@ -71,7 +72,8 @@ fn no_plaintext_secrets_on_disk() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("v.kdbx");
     let mut v = Vault::create(&path, "m").unwrap();
-    v.add(&input("Bank", "alice", "UNIQUE-MARKER-9f3a"));
+    v.add(&input("Bank", "alice", "UNIQUE-MARKER-9f3a"))
+        .unwrap();
     v.save().unwrap();
     let bytes = std::fs::read(&path).unwrap();
     let hay = String::from_utf8_lossy(&bytes);
@@ -120,9 +122,17 @@ fn groups_and_hierarchy() {
         .iter()
         .any(|g| g.id == personal_id && g.name == "Personal"));
 
+    // Adding an entry with a nonexistent group_id must fail with GroupNotFound
+    let mut invalid_grp_item = input("Orphan", "user", "secret");
+    invalid_grp_item.group_id = Some(uuid::Uuid::nil());
+    assert!(matches!(
+        v.add(&invalid_grp_item),
+        Err(VaultError::GroupNotFound)
+    ));
+
     let mut item = input("Work Email", "corp\\alice", "secret");
     item.group_id = Some(work_id);
-    let entry_id = v.add(&item);
+    let entry_id = v.add(&item).unwrap();
     v.save().unwrap();
 
     let details = v.details(entry_id).unwrap();
@@ -150,16 +160,17 @@ fn totp_generation_and_storage() {
 
     let mut item = input("GitLab", "alice", "pw123");
     // Standard RFC 6238 test URI with base32 secret
-    item.otp = Some(
-        "otpauth://totp/GitLab:alice?secret=JBSWY3DPEHPK3PXP&issuer=GitLab&digits=6"
-            .to_string()
-            .into(),
-    );
-    let id = v.add(&item);
+    let raw_uri = "otpauth://totp/GitLab:alice?secret=JBSWY3DPEHPK3PXP&issuer=GitLab&digits=6";
+    item.otp = Some(raw_uri.to_string().into());
+    let id = v.add(&item).unwrap();
     v.save().unwrap();
 
     let details = v.details(id).unwrap();
-    assert!(details.otp_uri.is_some());
+    assert!(details.has_otp);
+    assert_eq!(
+        v.otp_uri(id).unwrap().as_deref().map(|s| s.as_str()),
+        Some(raw_uri)
+    );
 
     let token = v.totp(id).unwrap().expect("should produce totp token");
     assert_eq!(token.code.len(), 6);
@@ -173,6 +184,8 @@ fn totp_generation_and_storage() {
     v.update(id, &updated).unwrap();
     v.save().unwrap();
 
+    assert!(!v.details(id).unwrap().has_otp);
+    assert!(v.otp_uri(id).unwrap().is_none());
     let no_token = v.totp(id).unwrap();
     assert!(no_token.is_none());
 }
@@ -183,7 +196,7 @@ fn attachments_crud() {
     let path = dir.path().join("v.kdbx");
     let mut v = Vault::create(&path, "master").unwrap();
 
-    let id = v.add(&input("SecureServer", "root", "toor"));
+    let id = v.add(&input("SecureServer", "root", "toor")).unwrap();
     v.save().unwrap();
 
     let png_data = b"\x89PNG\r\n\x1a\nfakeimagebytes";
@@ -213,6 +226,11 @@ fn attachments_crud() {
     assert_eq!(v.get_attachment(id, "badge.png").unwrap(), png_data);
 
     v.remove_attachment(id, "badge.png").unwrap();
+    // Removing a nonexistent attachment must return AttachmentNotFound
+    assert!(matches!(
+        v.remove_attachment(id, "badge.png"),
+        Err(VaultError::AttachmentNotFound)
+    ));
     let list_after = v.list_attachments(id).unwrap();
     assert_eq!(list_after.len(), 1);
     assert!(matches!(
@@ -229,7 +247,7 @@ fn merge_from_file_3way() {
 
     // Base vault
     let mut va = Vault::create(&path_a, "master").unwrap();
-    let id_shared = va.add(&input("SharedEntry", "user1", "pass1"));
+    let id_shared = va.add(&input("SharedEntry", "user1", "pass1")).unwrap();
     va.save().unwrap();
     drop(va);
 
@@ -238,12 +256,12 @@ fn merge_from_file_3way() {
 
     // In vault A: add Entry A
     let mut va = Vault::open(&path_a, "master").unwrap();
-    let id_a = va.add(&input("OnlyOnA", "userA", "passA"));
+    let id_a = va.add(&input("OnlyOnA", "userA", "passA")).unwrap();
     va.save().unwrap();
 
     // In vault B: add Entry B
     let mut vb = Vault::open(&path_b, "master").unwrap();
-    let id_b = vb.add(&input("OnlyOnB", "userB", "passB"));
+    let id_b = vb.add(&input("OnlyOnB", "userB", "passB")).unwrap();
     vb.save().unwrap();
     drop(vb);
 
@@ -265,11 +283,11 @@ fn merge_auth_failure_preserves_active_vault() {
     let path_b = dir.path().join("vault_b.kdbx");
 
     let mut va = Vault::create(&path_a, "masterA").unwrap();
-    let id_a = va.add(&input("EntryA", "alice", "secretA"));
+    let id_a = va.add(&input("EntryA", "alice", "secretA")).unwrap();
     va.save().unwrap();
 
     let mut vb = Vault::create(&path_b, "masterB").unwrap();
-    vb.add(&input("EntryB", "bob", "secretB"));
+    vb.add(&input("EntryB", "bob", "secretB")).unwrap();
     vb.save().unwrap();
     drop(vb);
 
@@ -293,7 +311,7 @@ fn merge_corrupt_and_missing_replicas_fail_safely() {
     let empty_path = dir.path().join("empty.kdbx");
 
     let mut va = Vault::create(&path_a, "master").unwrap();
-    let id_a = va.add(&input("EntryA", "alice", "secretA"));
+    let id_a = va.add(&input("EntryA", "alice", "secretA")).unwrap();
     va.save().unwrap();
 
     // 1. Missing file
@@ -326,11 +344,11 @@ fn merge_unrelated_vaults_fails_safely_without_panic() {
     let path_b = dir.path().join("vault_b.kdbx");
 
     let mut va = Vault::create(&path_a, "master").unwrap();
-    let id_a = va.add(&input("EntryA", "alice", "secretA"));
+    let id_a = va.add(&input("EntryA", "alice", "secretA")).unwrap();
     va.save().unwrap();
 
     let mut vb = Vault::create(&path_b, "master").unwrap();
-    vb.add(&input("EntryB", "bob", "secretB"));
+    vb.add(&input("EntryB", "bob", "secretB")).unwrap();
     vb.save().unwrap();
     drop(vb);
 
@@ -353,7 +371,7 @@ fn merge_self_is_prevented() {
     let dir = tempfile::tempdir().unwrap();
     let path_a = dir.path().join("vault_a.kdbx");
     let mut va = Vault::create(&path_a, "master").unwrap();
-    va.add(&input("EntryA", "alice", "secretA"));
+    va.add(&input("EntryA", "alice", "secretA")).unwrap();
     va.save().unwrap();
 
     let res = va.merge_from_file(&path_a, "master");
@@ -368,14 +386,14 @@ fn merge_with_empty_password_uses_active_master() {
     let path_b = dir.path().join("vault_b.kdbx");
 
     let mut va = Vault::create(&path_a, "common_master").unwrap();
-    va.add(&input("EntryA", "alice", "secretA"));
+    va.add(&input("EntryA", "alice", "secretA")).unwrap();
     va.save().unwrap();
     drop(va);
 
     // Clone to path_b (sharing same root and master password)
     std::fs::copy(&path_a, &path_b).unwrap();
     let mut vb = Vault::open(&path_b, "common_master").unwrap();
-    let id_b = vb.add(&input("EntryB", "bob", "secretB"));
+    let id_b = vb.add(&input("EntryB", "bob", "secretB")).unwrap();
     vb.save().unwrap();
     drop(vb);
 
@@ -395,7 +413,7 @@ fn sync_with_file_updates_both_replicas_bidirectionally() {
 
     // Base vault
     let mut va = Vault::create(&path_a, "master").unwrap();
-    let id_shared = va.add(&input("Shared", "shared", "pw"));
+    let id_shared = va.add(&input("Shared", "shared", "pw")).unwrap();
     va.save().unwrap();
     drop(va);
 
@@ -404,12 +422,12 @@ fn sync_with_file_updates_both_replicas_bidirectionally() {
 
     // Vault A adds Entry A
     let mut va = Vault::open(&path_a, "master").unwrap();
-    let id_a = va.add(&input("OnlyA", "alice", "pwA"));
+    let id_a = va.add(&input("OnlyA", "alice", "pwA")).unwrap();
     va.save().unwrap();
 
     // Vault B adds Entry B
     let mut vb = Vault::open(&path_b, "master").unwrap();
-    let id_b = vb.add(&input("OnlyB", "bob", "pwB"));
+    let id_b = vb.add(&input("OnlyB", "bob", "pwB")).unwrap();
     vb.save().unwrap();
     drop(vb);
 
@@ -440,15 +458,15 @@ fn domain_autofill_query() {
 
     let mut e1 = input("Google Account", "user@gmail.com", "pass");
     e1.url = "https://accounts.google.com/signin/v2/identifier".into();
-    v.add(&e1);
+    v.add(&e1).unwrap();
 
     let mut e2 = input("GitHub Work", "octocat", "ghp_123");
     e2.url = "https://github.com/login".into();
-    v.add(&e2);
+    v.add(&e2).unwrap();
 
     let mut e3 = input("AWS Console", "admin", "pass");
     e3.url = String::new(); // No URL, title only
-    v.add(&e3);
+    v.add(&e3).unwrap();
 
     let google_hits = v.find_for_domain("google.com");
     assert_eq!(google_hits.len(), 1);
@@ -462,12 +480,735 @@ fn domain_autofill_query() {
     assert_eq!(aws_hits.len(), 1);
     assert_eq!(aws_hits[0].title, "AWS Console");
 
-    // Negative tests: Phishing sites and substring spoofing must be rejected!
+    // Negative tests: Phishing sites, reverse-subdomain queries, and substring spoofing must be rejected!
     assert!(v.find_for_domain("evil-google.com").is_empty());
     assert!(v.find_for_domain("google.com.attacker.site").is_empty());
     assert!(v.find_for_domain("evil-aws.com").is_empty());
     assert!(v
         .find_for_domain("https://phishing.site/google.com")
         .is_empty());
+    // Reverse subdomain check: entry for github.com must NOT match arbitrary subdomain queries like evil.github.com
+    assert!(v.find_for_domain("evil.github.com").is_empty());
     assert!(v.find_for_domain("").is_empty());
+}
+
+#[test]
+fn passkey_generation_storage_and_category_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.kdbx");
+    let mut v = Vault::create(&path, "master").unwrap();
+
+    // 1. Entry on a known passkey-supported domain (github.com)
+    let mut gh = input("GitHub", "octocat", "pw123");
+    gh.url = "https://github.com/login".into();
+    let gh_id = v.add(&gh).unwrap();
+
+    // 2. Entry on an internal domain (not passkey-supported by default)
+    let mut lan = input("Router Admin", "admin", "pw456");
+    lan.url = "https://router.internal.lan".into();
+    let lan_id = v.add(&lan).unwrap();
+
+    // 3. Entry with spoofed domain (must NOT be flagged as passkey-supported)
+    let mut spoof = input("Custom Portal", "user", "pw789");
+    spoof.url = "https://evil-google.com/login".into();
+    let spoof_id = v.add(&spoof).unwrap();
+    v.save().unwrap();
+
+    let list_initial = v.search("");
+    let gh_sum = list_initial.iter().find(|e| e.id == gh_id).unwrap();
+    assert!(!gh_sum.has_passkey);
+    assert!(gh_sum.passkey_supported);
+
+    let lan_sum = list_initial.iter().find(|e| e.id == lan_id).unwrap();
+    assert!(!lan_sum.has_passkey);
+    assert!(!lan_sum.passkey_supported);
+
+    let spoof_sum = list_initial.iter().find(|e| e.id == spoof_id).unwrap();
+    assert!(!spoof_sum.has_passkey);
+    assert!(!spoof_sum.passkey_supported);
+
+    // Generate a passkey for GitHub (auto-inferring rp_id and username from entry)
+    let pk = v.generate_passkey(gh_id, "", "").unwrap();
+    assert_eq!(pk.rp_id, "github.com");
+    assert_eq!(pk.username, "octocat");
+    assert!(!pk.credential_id.is_empty());
+    assert!(!pk.user_handle.is_empty());
+
+    // Ensure private key PEM is encrypted on disk and never appears in plaintext bytes
+    let raw_bytes = std::fs::read(&path).unwrap();
+    let raw_str = String::from_utf8_lossy(&raw_bytes);
+    assert!(!raw_str.contains("BEGIN PRIVATE KEY"));
+
+    // Reopen vault from disk and verify persistence
+    drop(v);
+    let mut v = Vault::open(&path, "master").unwrap();
+    let list_after = v.search("");
+    let gh_after = list_after.iter().find(|e| e.id == gh_id).unwrap();
+    assert!(gh_after.has_passkey);
+    assert!(gh_after.passkey_supported);
+
+    let details = v.details(gh_id).unwrap();
+    assert_eq!(details.passkey, Some(pk));
+    assert!(details.passkey_supported);
+
+    // Remove passkey and confirm state resets to passkey_supported=true, has_passkey=false
+    v.remove_passkey(gh_id).unwrap();
+    let details_removed = v.details(gh_id).unwrap();
+    assert!(details_removed.passkey.is_none());
+    assert!(details_removed.passkey_supported);
+}
+
+#[test]
+fn sequential_uuid_v7_and_argon2id_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.kdbx");
+    let mut v = Vault::create(&path, "master").unwrap();
+
+    // Verify new vaults use hardened Argon2id KDF defaults (not keepass's 1MB Argon2d default)
+    let kdf = v.kdf_params().expect("vault should use Argon2id");
+    assert_eq!(kdf, KdfParams::default());
+    assert_eq!(kdf.iterations, 6);
+    assert_eq!(kdf.memory_bytes, 32 * 1024 * 1024);
+    assert_eq!(kdf.parallelism, 4);
+
+    // Verify root group, created groups, and created entries all use sequential UUIDv7 (version 7)
+    let gid = v.create_group("Ops").unwrap();
+    assert_eq!(gid.get_version_num(), 7);
+    for g in v.list_groups() {
+        assert_eq!(g.id.get_version_num(), 7, "group {} must be UUIDv7", g.name);
+    }
+
+    let e1 = v.add(&input("First", "u1", "p1")).unwrap();
+    let e2 = v.add(&input("Second", "u2", "p2")).unwrap();
+    assert_eq!(e1.get_version_num(), 7);
+    assert_eq!(e2.get_version_num(), 7);
+    assert_ne!(e1, e2);
+}
+
+#[test]
+fn optimistic_concurrency_rejects_stale_revision_date() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.kdbx");
+    let mut v = Vault::create(&path, "master").unwrap();
+
+    let id = v.add(&input("ProdDB", "admin", "initial-pw")).unwrap();
+    v.save().unwrap();
+
+    let initial_rev = v
+        .details(id)
+        .unwrap()
+        .revision_date
+        .expect("revision_date present");
+
+    // First update advances revision_date monotonically
+    let mut upd1 = input("ProdDB", "admin", "updated-pw-1");
+    upd1.last_known_revision_date = Some(initial_rev);
+    v.update(id, &upd1).unwrap();
+    v.save().unwrap();
+
+    let new_rev = v
+        .details(id)
+        .unwrap()
+        .revision_date
+        .expect("revision_date present");
+    assert!(
+        new_rev > initial_rev,
+        "revision_date must strictly advance on update"
+    );
+
+    // Stale client attempting to overwrite using an outdated revision_date (>1s older) is rejected
+    let mut stale_upd = input("ProdDB", "admin", "stale-overwrite");
+    stale_upd.last_known_revision_date = Some(new_rev - 5);
+    let err = v.update(id, &stale_upd).unwrap_err();
+    assert!(matches!(err, VaultError::StaleRevision { .. }));
+
+    // Password remains the newer one
+    assert_eq!(v.password(id).unwrap().as_str(), "updated-pw-1");
+}
+
+#[test]
+fn sync_propagates_entry_edits_and_deletion_tombstones() {
+    let dir = tempfile::tempdir().unwrap();
+    let path_a = dir.path().join("vault_a.kdbx");
+    let path_b = dir.path().join("vault_b.kdbx");
+
+    let mut va = Vault::create(&path_a, "master").unwrap();
+    let id_edit_a = va.add(&input("EditInA", "alice", "v1")).unwrap();
+    let id_delete_a = va.add(&input("DeleteInA", "bob", "v1")).unwrap();
+    let id_edit_b = va.add(&input("EditInB", "carol", "v1")).unwrap();
+    let id_delete_b = va.add(&input("DeleteInB", "dave", "v1")).unwrap();
+    va.save().unwrap();
+    drop(va);
+
+    std::fs::copy(&path_a, &path_b).unwrap();
+
+    // In Vault A: update EditInA and delete DeleteInA
+    let mut va = Vault::open(&path_a, "master").unwrap();
+    va.update(id_edit_a, &input("EditInA", "alice", "v2-from-a"))
+        .unwrap();
+    va.remove(id_delete_a).unwrap();
+    va.save().unwrap();
+
+    // In Vault B: update EditInB and delete DeleteInB
+    let mut vb = Vault::open(&path_b, "master").unwrap();
+    vb.update(id_edit_b, &input("EditInB", "carol", "v2-from-b"))
+        .unwrap();
+    vb.remove(id_delete_b).unwrap();
+    vb.save().unwrap();
+    drop(vb);
+
+    // Sync Vault A with Vault B
+    let events = va.sync_with_file(&path_b, "master").unwrap();
+    assert!(events >= 1);
+
+    // Both Vault A and Vault B must reflect all updates and deletion tombstones from both replicas
+    assert_eq!(va.password(id_edit_a).unwrap().as_str(), "v2-from-a");
+    assert_eq!(va.password(id_edit_b).unwrap().as_str(), "v2-from-b");
+    assert!(matches!(va.details(id_delete_a), Err(VaultError::NotFound)));
+    assert!(matches!(va.details(id_delete_b), Err(VaultError::NotFound)));
+
+    let vb = Vault::open(&path_b, "master").unwrap();
+    assert_eq!(vb.password(id_edit_a).unwrap().as_str(), "v2-from-a");
+    assert_eq!(vb.password(id_edit_b).unwrap().as_str(), "v2-from-b");
+    assert!(matches!(vb.details(id_delete_a), Err(VaultError::NotFound)));
+    assert!(matches!(vb.details(id_delete_b), Err(VaultError::NotFound)));
+}
+
+#[test]
+fn attachments_are_stored_protected_in_kdbx4() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.kdbx");
+    let mut v = Vault::create(&path, "master").unwrap();
+    let id = v.add(&input("SSH", "root", "pw")).unwrap();
+    v.save().unwrap();
+
+    v.add_attachment(id, "id_ed25519", b"SECRET-SSH-KEY-MATERIAL")
+        .unwrap();
+    assert!(v.is_attachment_protected(id, "id_ed25519").unwrap());
+
+    drop(v);
+    let v_reopened = Vault::open(&path, "master").unwrap();
+    assert!(v_reopened
+        .is_attachment_protected(id, "id_ed25519")
+        .unwrap());
+    assert_eq!(
+        v_reopened.get_attachment(id, "id_ed25519").unwrap(),
+        b"SECRET-SSH-KEY-MATERIAL"
+    );
+}
+
+#[test]
+fn master_password_rotation_is_atomic_and_bumps_revisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.kdbx");
+    let mut v = Vault::create(&path, "old-master").unwrap();
+    let id = v.add(&input("AWS", "root", "aws-secret")).unwrap();
+    v.save().unwrap();
+
+    let rev_before = v.details(id).unwrap().revision_date.unwrap();
+
+    // Wrong current password (same length, shorter prefix, and longer suffix) must fail with InvalidMasterPassword
+    assert!(matches!(
+        v.change_master_password("wrong-old!", "new-master"),
+        Err(VaultError::InvalidMasterPassword)
+    ));
+    assert!(matches!(
+        v.change_master_password("old", "new-master"),
+        Err(VaultError::InvalidMasterPassword)
+    ));
+    assert!(matches!(
+        v.change_master_password("old-master-extra", "new-master"),
+        Err(VaultError::InvalidMasterPassword)
+    ));
+    assert!(matches!(
+        v.change_master_password("old-master", ""),
+        Err(VaultError::EmptyMasterPassword)
+    ));
+
+    // Valid master password rotation
+    v.change_master_password("old-master", "new-master-strong")
+        .unwrap();
+    let rev_after = v.details(id).unwrap().revision_date.unwrap();
+    assert!(
+        rev_after > rev_before,
+        "rotation must bump revision_date on all entries"
+    );
+    drop(v);
+
+    // Old password must no longer open the vault on disk
+    assert!(Vault::open(&path, "old-master").is_err());
+
+    // New password opens the vault and preserves all decrypted secrets
+    let v_new = Vault::open(&path, "new-master-strong").unwrap();
+    assert_eq!(v_new.password(id).unwrap().as_str(), "aws-secret");
+}
+
+#[test]
+fn enpass_advanced_password_generator_and_strength_audit() {
+    use vaultkeep_core::{
+        evaluate_password_strength, generate_password_advanced, AdvancedPasswordPolicy,
+    };
+
+    // 1. Default 32-char Enpass policy produces an Excellent password
+    let def_pw = generate_password_advanced(&AdvancedPasswordPolicy::default()).unwrap();
+    assert_eq!(def_pw.len(), 32);
+    let (score, label, compromised) = evaluate_password_strength(&def_pw);
+    assert!(score >= 80, "expected >=80, got {score}");
+    assert_eq!(label, "Excellent");
+    assert!(!compromised);
+
+    // 2. Pronounceable mode respects length, uppercase, digits, and symbols
+    let pron_policy = AdvancedPasswordPolicy {
+        length: 20,
+        pronounceable: true,
+        upper: true,
+        digits: true,
+        symbols: true,
+        ..Default::default()
+    };
+    let pron_pw = generate_password_advanced(&pron_policy).unwrap();
+    assert_eq!(pron_pw.len(), 20);
+    assert!(pron_pw.chars().any(|c| c.is_ascii_uppercase()));
+    assert!(pron_pw.chars().any(|c| c.is_ascii_digit()));
+
+    // 3. Exact mode places exact counts of uppercase, digits, and symbols
+    let exact_policy = AdvancedPasswordPolicy {
+        length: 16,
+        pronounceable: false,
+        lower: true,
+        upper: true,
+        digits: true,
+        symbols: true,
+        exact_mode: true,
+        min_upper: 2,
+        min_digits: 3,
+        min_symbols: 2,
+        ..Default::default()
+    };
+    let exact_pw = generate_password_advanced(&exact_policy).unwrap();
+    assert_eq!(exact_pw.len(), 16);
+    assert_eq!(
+        exact_pw.chars().filter(|c| c.is_ascii_uppercase()).count(),
+        2
+    );
+    assert_eq!(exact_pw.chars().filter(|c| c.is_ascii_digit()).count(), 3);
+    assert_eq!(
+        exact_pw
+            .chars()
+            .filter(|c| !c.is_ascii_alphanumeric())
+            .count(),
+        2
+    );
+
+    // 4. Exclude characters are never emitted
+    let excl_policy = AdvancedPasswordPolicy {
+        length: 24,
+        exclude_chars: "aeiouAEIOU23456789".into(),
+        allow_ambiguous: true,
+        ..Default::default()
+    };
+    let excl_pw = generate_password_advanced(&excl_policy).unwrap();
+    assert_eq!(excl_pw.len(), 24);
+    assert!(!excl_pw.chars().any(|c| "aeiouAEIOU23456789".contains(c)));
+
+    // 5. Adversarial policy rejections (exceeding length or empty pools)
+    let impossible = AdvancedPasswordPolicy {
+        length: 8,
+        min_upper: 5,
+        min_digits: 5,
+        ..Default::default()
+    };
+    assert!(generate_password_advanced(&impossible).is_err());
+
+    // 6. Compromised / breached common password detection
+    let (bad_score, bad_label, bad_comp) = evaluate_password_strength("password123");
+    assert!(bad_comp);
+    assert_eq!(bad_label, "Weak");
+    assert!(bad_score < 30);
+}
+
+#[test]
+fn enpass_audit_engine_categories_tags_and_rolling_backups() {
+    use vaultkeep_core::EntryMetadata;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.kdbx");
+    let backup_dir = dir.path().join("Backups");
+
+    let mut v = Vault::create(&path, "master-key").unwrap();
+
+    // 1. Add two entries sharing the same password ("ReusedSecret#2026!") to test Identical detection
+    let id1 = v
+        .add(&input(
+            "Binance",
+            "trader@example.com",
+            "ReusedSecret#2026!",
+        ))
+        .unwrap();
+    let id2 = v
+        .add(&input(
+            "Coinspot",
+            "trader@example.com",
+            "ReusedSecret#2026!",
+        ))
+        .unwrap();
+    // 2. Add an entry with a known compromised password ("123456")
+    let id_comp = v.add(&input("LegacyForum", "user", "123456")).unwrap();
+    // 3. Add an entry with a strong unique password
+    let id_strong = v
+        .add(&input(
+            "ProtonMail",
+            "sec@proton.me",
+            "w$ZLV8*2S4.rG_@Z.(Wq#K/.ja>]Dx0s",
+        ))
+        .unwrap();
+
+    // Set Enpass Category, Tags, Favorite, Archived on id_strong
+    v.set_entry_metadata(
+        id_strong,
+        &EntryMetadata {
+            category: "Finance".into(),
+            tags: vec!["Crypto".into(), "Cards".into()],
+            is_favorite: true,
+            is_archived: false,
+            is_trashed: false,
+            is_compromised: false,
+            is_expired: false,
+        },
+    )
+    .unwrap();
+
+    let all = v.search("");
+    let s1 = all.iter().find(|e| e.id == id1).unwrap();
+    let s2 = all.iter().find(|e| e.id == id2).unwrap();
+    assert!(s1.is_identical, "id1 must be flagged as identical/reused");
+    assert!(s2.is_identical, "id2 must be flagged as identical/reused");
+    assert!(s1.two_fa_supported, "Binance is a 2FA-supported domain");
+
+    let s_comp = all.iter().find(|e| e.id == id_comp).unwrap();
+    assert!(s_comp.is_compromised);
+    assert!(s_comp.is_weak);
+    assert_eq!(s_comp.password_strength, "Weak");
+
+    let s_strong = all.iter().find(|e| e.id == id_strong).unwrap();
+    assert!(!s_strong.is_identical);
+    assert!(!s_strong.is_weak);
+    assert_eq!(s_strong.password_strength, "Excellent");
+    assert_eq!(s_strong.category, "Finance");
+    assert_eq!(
+        s_strong.tags,
+        vec!["Crypto".to_string(), "Cards".to_string()]
+    );
+    assert!(s_strong.is_favorite);
+
+    // Search by tag and category
+    assert_eq!(v.search("crypto").len(), 1);
+    assert_eq!(v.search("finance").len(), 1);
+
+    // Rolling backups: create 5 backups with max_backups = 3 and verify only latest 3 remain
+    for _ in 0..5 {
+        let bpath = v.create_backup(&backup_dir, 3).unwrap();
+        assert!(bpath.exists());
+    }
+    let retained: Vec<_> = std::fs::read_dir(&backup_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert_eq!(
+        retained.len(),
+        3,
+        "only max_backups=3 snapshots must be preserved"
+    );
+}
+
+#[test]
+fn windows_and_android_passkey_ceremonies_and_adversarial_checks() {
+    use vaultkeep_core::{
+        passkey::{self, flags},
+        PasskeyCeremonyScope, PasskeyChallengeFactory, PasskeyPlatform, PasskeyTokenConfig,
+        UserVerificationRequirement, COSE_ALG_ES256,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("passkey_ceremony.kdbx");
+    let mut v = Vault::create(&path, "master-passkey-test").unwrap();
+
+    let mut gh = input("GitHub", "octocat", "pw123");
+    gh.url = "https://github.com/login".into();
+    let gh_id = v.add(&gh).unwrap();
+    v.save().unwrap();
+
+    let factory = PasskeyChallengeFactory::new(PasskeyTokenConfig::default()).unwrap();
+    let now_unix = 1_790_000_000i64;
+
+    // 1. Windows Registration (MakeCredential) happy path with UV=true
+    let reg_token = factory
+        .mint_challenge("github.com", PasskeyCeremonyScope::Registration, now_unix)
+        .unwrap();
+    let reg_resp = v
+        .register_webauthn_passkey(
+            gh_id,
+            PasskeyPlatform::Windows,
+            "github.com",
+            "octocat",
+            "Octocat GitHub",
+            "https://github.com",
+            &reg_token,
+            &factory,
+            now_unix + 5,
+            UserVerificationRequirement::Required,
+            true,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(reg_resp.rp_id, "github.com");
+    assert_eq!(reg_resp.username, "octocat");
+    assert_eq!(reg_resp.display_name, "Octocat GitHub");
+    assert_eq!(reg_resp.platform, PasskeyPlatform::Windows);
+    assert_eq!(reg_resp.authenticator_attachment, "platform");
+    assert_eq!(
+        reg_resp.transports,
+        vec!["hybrid".to_string(), "internal".to_string()]
+    );
+    assert_eq!(reg_resp.cose_algorithm, COSE_ALG_ES256);
+    assert!(reg_resp.cred_props_rk);
+    // passkeys.dev synced passkey create flags: UP(0x01) | UV(0x04) | BE(0x08) | BS(0x10) | AT(0x40) = 0x5d
+    assert_eq!(
+        reg_resp.flags,
+        flags::UP | flags::UV | flags::BE | flags::BS | flags::AT
+    );
+    assert_eq!(reg_resp.flags, 0x5d);
+
+    let cose_bytes = passkey::decode_base64url(&reg_resp.public_key_cose_b64url).unwrap();
+    assert_eq!(cose_bytes.len(), 77);
+    assert_eq!(
+        &cose_bytes[0..7],
+        &[0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01]
+    );
+
+    // 2. Adversarial: excludeCredentials matching existing credential must fail with InvalidStateError
+    let reg_token_dup = factory
+        .mint_challenge("github.com", PasskeyCeremonyScope::Registration, now_unix)
+        .unwrap();
+    let dup_err = v
+        .register_webauthn_passkey(
+            gh_id,
+            PasskeyPlatform::Windows,
+            "github.com",
+            "octocat",
+            "Octocat",
+            "https://github.com",
+            &reg_token_dup,
+            &factory,
+            now_unix + 10,
+            UserVerificationRequirement::Preferred,
+            true,
+            std::slice::from_ref(&reg_resp.credential_id),
+            &[],
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert!(matches!(dup_err, VaultError::Policy(_)));
+
+    // 3. Adversarial: Strict User Verification (passkeys.dev Known Issue compliance)
+    // Required + user_verified=false MUST fail closed!
+    let auth_token = factory
+        .mint_challenge("github.com", PasskeyCeremonyScope::Authentication, now_unix)
+        .unwrap();
+    let uv_err = v
+        .authenticate_webauthn_passkey(
+            gh_id,
+            PasskeyPlatform::Windows,
+            "https://github.com",
+            &auth_token,
+            &factory,
+            now_unix + 10,
+            UserVerificationRequirement::Required,
+            false,
+            &[],
+            None,
+        )
+        .unwrap_err();
+    assert!(matches!(uv_err, VaultError::Policy(_)));
+
+    // Preferred + user_verified=false MUST succeed with UV=0 (flags = 0x19: UP | BE | BS, no UV!)
+    let auth_unverified = v
+        .authenticate_webauthn_passkey(
+            gh_id,
+            PasskeyPlatform::Windows,
+            "https://github.com",
+            &auth_token,
+            &factory,
+            now_unix + 10,
+            UserVerificationRequirement::Preferred,
+            false,
+            &[],
+            None,
+        )
+        .unwrap();
+    assert!(!auth_unverified.user_verified);
+    assert_eq!(auth_unverified.flags, flags::UP | flags::BE | flags::BS);
+    assert_eq!(auth_unverified.flags, 0x19);
+
+    // 4. Android Authentication (GetAssertion) with APK key-hash origin and UV=true
+    let android_assert = v
+        .authenticate_webauthn_passkey(
+            gh_id,
+            PasskeyPlatform::Android,
+            "android:apk-key-hash:p256_apk_signing_cert_sha256_digest_b64url",
+            &auth_token,
+            &factory,
+            now_unix + 15,
+            UserVerificationRequirement::Required,
+            true,
+            &[],
+            Some("com.github.android"),
+        )
+        .unwrap();
+    // passkeys.dev synced passkey get flags: UP(0x01) | UV(0x04) | BE(0x08) | BS(0x10) = 0x1d
+    assert_eq!(
+        android_assert.flags,
+        flags::UP | flags::UV | flags::BE | flags::BS
+    );
+    assert_eq!(android_assert.flags, 0x1d);
+    let client_json = String::from_utf8(
+        passkey::decode_base64url(&android_assert.client_data_json_b64url).unwrap(),
+    )
+    .unwrap();
+    assert!(client_json.contains(r#""androidPackageName":"com.github.android""#));
+
+    // 5. Adversarial: Expired challenge token, wrong scope, wrong RP ID, and forged factory key
+    let expired_err = v
+        .authenticate_webauthn_passkey(
+            gh_id,
+            PasskeyPlatform::Windows,
+            "https://github.com",
+            &auth_token,
+            &factory,
+            now_unix + 500, // beyond 120s TTL
+            UserVerificationRequirement::Preferred,
+            true,
+            &[],
+            None,
+        )
+        .unwrap_err();
+    assert!(matches!(expired_err, VaultError::Policy(_)));
+
+    let wrong_scope_err = v
+        .authenticate_webauthn_passkey(
+            gh_id,
+            PasskeyPlatform::Windows,
+            "https://github.com",
+            &reg_token, // Registration token used for Authentication
+            &factory,
+            now_unix + 10,
+            UserVerificationRequirement::Preferred,
+            true,
+            &[],
+            None,
+        )
+        .unwrap_err();
+    assert!(matches!(wrong_scope_err, VaultError::Policy(_)));
+
+    let other_factory = PasskeyChallengeFactory::new(PasskeyTokenConfig::default()).unwrap();
+    let forged_err = v
+        .authenticate_webauthn_passkey(
+            gh_id,
+            PasskeyPlatform::Windows,
+            "https://github.com",
+            &auth_token,
+            &other_factory,
+            now_unix + 10,
+            UserVerificationRequirement::Preferred,
+            true,
+            &[],
+            None,
+        )
+        .unwrap_err();
+    assert!(matches!(forged_err, VaultError::Policy(_)));
+
+    // 6. Related Origin Requests (ROR) 5-unique-eTLD-1 label rule
+    // Phishing origin without ROR fails
+    assert!(
+        passkey::validate_rp_id_for_origin("github.com", "https://evil-github.com", &[]).is_err()
+    );
+
+    // ROR with 5 unique labels (where shopping.com and shopping.co.uk count as 1 label "shopping") succeeds
+    let valid_ror = vec![
+        "https://shopping.com".to_string(),
+        "https://shopping.co.uk".to_string(),
+        "https://brand-two.com".to_string(),
+        "https://brand-three.org".to_string(),
+        "https://brand-four.net".to_string(),
+        "https://brand-five.io".to_string(),
+    ];
+    assert!(passkey::validate_rp_id_for_origin(
+        "shopping.com",
+        "https://brand-five.io",
+        &valid_ror
+    )
+    .is_ok());
+
+    // ROR exceeding 5 unique labels (6 distinct labels) must fail
+    let excessive_ror = vec![
+        "https://label1.com".to_string(),
+        "https://label2.com".to_string(),
+        "https://label3.com".to_string(),
+        "https://label4.com".to_string(),
+        "https://label5.com".to_string(),
+        "https://label6.com".to_string(),
+    ];
+    assert!(
+        passkey::validate_rp_id_for_origin("label1.com", "https://label6.com", &excessive_ror)
+            .is_err()
+    );
+
+    // 7. Optimistic concurrency check on passkey mutations
+    let rev = v.details(gh_id).unwrap().revision_date.unwrap();
+    let stale_err = v
+        .generate_passkey_with_revision(gh_id, "github.com", "octocat", Some(rev - 30))
+        .unwrap_err();
+    assert!(matches!(stale_err, VaultError::StaleRevision { .. }));
+
+    // 8. Discoverable Credential lookup & WebAuthn Level 3 Signal API
+    let discovered = v.find_passkeys_for_rp("login.github.com", &[]);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].0, gh_id);
+
+    // signalCurrentUserDetails updates username
+    let updated = v
+        .signal_current_user_details(
+            "github.com",
+            &reg_resp.user_handle,
+            "octocat-renamed",
+            "Octocat Renamed",
+        )
+        .unwrap();
+    assert_eq!(updated, 1);
+    assert_eq!(
+        v.details(gh_id).unwrap().passkey.unwrap().username,
+        "octocat-renamed"
+    );
+
+    // signalAllAcceptedCredentials keeps credential when listed, prunes when omitted
+    let pruned_none = v
+        .signal_all_accepted_credentials(
+            "github.com",
+            &reg_resp.user_handle,
+            std::slice::from_ref(&reg_resp.credential_id),
+        )
+        .unwrap();
+    assert_eq!(pruned_none, 0);
+    assert!(v.details(gh_id).unwrap().passkey.is_some());
+
+    let removed = v
+        .signal_unknown_credential("github.com", &reg_resp.credential_id)
+        .unwrap();
+    assert!(removed);
+    assert!(v.details(gh_id).unwrap().passkey.is_none());
 }

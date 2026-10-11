@@ -13,6 +13,7 @@ zeroize.workspace = true
 rand.workspace = true
 uuid.workspace = true
 tempfile.workspace = true
+ring.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

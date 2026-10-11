@@ -41,22 +41,21 @@ KeePassXC is the canonical desktop open-source reference implementation for KDBX
 
 ### 1. Write Test (VaultKeep -> KeePassXC)
 
-1. Create a vault with the VaultKeep CLI:
+1. Create a vault with the VaultKeep CLI (prompts interactively for the master password so secrets never enter shell history):
    ```bash
-   cargo run -p vaultkeep-cli -- new my_vault.kdbx "TestMasterPassword123"
-   cargo run -p vaultkeep-cli -- add my_vault.kdbx "TestMasterPassword123" "GitHub" "alice" "SecretPass999!" --url "https://github.com"
+   cargo run -p vaultkeep-cli -- my_vault.kdbx init
+   cargo run -p vaultkeep-cli -- my_vault.kdbx add "GitHub" "alice" "https://github.com"
    ```
 
 2. Inspect and verify using KeePassXC CLI:
    ```bash
    # List entries
    keepassxc-cli ls my_vault.kdbx
-   # Enter password: TestMasterPassword123
 
    # Show entry and reveal password
    keepassxc-cli show -s my_vault.kdbx "GitHub"
    ```
-   **Expected result**: Output displays Title `GitHub`, Username `alice`, URL `https://github.com`, and Password `SecretPass999!`.
+   **Expected result**: Output displays Title `GitHub`, Username `alice`, URL `https://github.com`, and the generated password.
 
 ---
 
@@ -65,18 +64,15 @@ KeePassXC is the canonical desktop open-source reference implementation for KDBX
 1. Create a reference vault with KeePassXC CLI:
    ```bash
    keepassxc-cli db-create -p reference_vault.kdbx
-   # Set password to: TestMasterPassword123
-
    keepassxc-cli add -p reference_vault.kdbx "ServerLogin" -u "root" --url "https://internal.lan"
    ```
 
 2. Inspect and verify using VaultKeep CLI:
    ```bash
-   cargo run -p vaultkeep-cli -- list reference_vault.kdbx "TestMasterPassword123"
-   cargo run -p vaultkeep-cli -- get reference_vault.kdbx "TestMasterPassword123" "ServerLogin"
-   cargo run -p vaultkeep-cli -- copy reference_vault.kdbx "TestMasterPassword123" "ServerLogin"
+   cargo run -p vaultkeep-cli -- reference_vault.kdbx list
+   cargo run -p vaultkeep-cli -- reference_vault.kdbx show "ServerLogin"
    ```
-   **Expected result**: Entry `ServerLogin` is listed, details retrieved, and password copied safely.
+   **Expected result**: Entry `ServerLogin` is listed and its password can be retrieved after entering the master password at the interactive prompt.
 
 ---
 

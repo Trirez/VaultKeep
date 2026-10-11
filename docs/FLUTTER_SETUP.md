@@ -1,6 +1,6 @@
 # Flutter setup
 
-The Rust side (`crates/core`, `app/rust`) builds and passes its tests without Flutter. The Dart side in `app/lib` was written but **has not been compiled or run**, because the machine that generated this project had no Flutter SDK. Expect small fixes on first run. The first run is also when the platform folders and bindings get generated.
+The Rust side (`crates/core`, `app/rust`) builds and passes its tests without Flutter. In `app/`, the platform runners, `app/hook/build.dart` native-assets hook, and `flutter_rust_bridge 2.13.0` bindings (`app/lib/src/rust/**`, `app/rust/src/frb_generated.rs`) have already been generated and verified with `flutter analyze` and `flutter test` on Windows. Use the steps below when setting up a fresh machine or regenerating bindings after modifying `app/rust/src/api/vault.rs`.
 
 ## Prerequisites
 - Flutter SDK (stable channel) and, for each target, its toolchain: Android Studio + NDK for Android, Xcode for iOS and macOS (macOS only), Visual Studio C++ tools for Windows, GTK dev packages for Linux.

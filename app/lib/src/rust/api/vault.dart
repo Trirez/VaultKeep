@@ -6,8 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `parse_id`, `session`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `map_summary`, `parse_id`, `session`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Create a new vault file and leave it unlocked. Fails if the file exists.
 Future<void> createVault({required String path, required String master}) =>
@@ -28,12 +28,36 @@ Future<EntryDetails> getEntry({required String id}) =>
     RustLib.instance.api.crateApiVaultGetEntry(id: id);
 
 /// The only call that returns a password. Use for copy/reveal.
+/// Note: `Zeroizing<String>` from core is converted to a plain `String` at the FFI
+/// boundary because `flutter_rust_bridge` does not support custom drop semantics.
+/// The Dart VM's immutable strings cannot be wiped. This is an accepted limitation
+/// documented in the threat model (§1 — Trust Boundary Details).
 Future<String> revealPassword({required String id}) =>
     RustLib.instance.api.crateApiVaultRevealPassword(id: id);
+
+/// The only call that returns a TOTP seed URI. Use for edit/reveal.
+Future<String?> revealOtpUri({required String id}) =>
+    RustLib.instance.api.crateApiVaultRevealOtpUri(id: id);
 
 /// Add (`id == None`) or update an entry and save the vault. Returns the entry id.
 Future<String> saveEntry({String? id, required EntryData data}) =>
     RustLib.instance.api.crateApiVaultSaveEntry(id: id, data: data);
+
+/// Update non-secret Enpass metadata (category, tags, favorite, archive, trash) without touching the password.
+Future<void> setEntryMetadata(
+        {required String id,
+        required String category,
+        required List<String> tags,
+        required bool isFavorite,
+        required bool isArchived,
+        required bool isTrashed}) =>
+    RustLib.instance.api.crateApiVaultSetEntryMetadata(
+        id: id,
+        category: category,
+        tags: tags,
+        isFavorite: isFavorite,
+        isArchived: isArchived,
+        isTrashed: isTrashed);
 
 Future<void> deleteEntry({required String id}) =>
     RustLib.instance.api.crateApiVaultDeleteEntry(id: id);
@@ -43,6 +67,16 @@ Future<String> generateNewPassword(
         {required int length, required bool symbols}) =>
     RustLib.instance.api
         .crateApiVaultGenerateNewPassword(length: length, symbols: symbols);
+
+/// Enpass-grade advanced password generator from OS CSPRNG.
+Future<String> generateCustomPassword({required CustomPasswordPolicy policy}) =>
+    RustLib.instance.api.crateApiVaultGenerateCustomPassword(policy: policy);
+
+/// Create a timestamped encrypted backup of the unlocked vault and prune backups beyond `max_backups`.
+Future<String> createVaultBackup(
+        {required String backupDir, required int maxBackups}) =>
+    RustLib.instance.api.crateApiVaultCreateVaultBackup(
+        backupDir: backupDir, maxBackups: maxBackups);
 
 Future<List<GroupItem>> listGroups() =>
     RustLib.instance.api.crateApiVaultListGroups();
@@ -81,6 +115,39 @@ Future<int> mergeVault(
 Future<List<EntryItem>> findEntriesForDomain({required String domain}) =>
     RustLib.instance.api.crateApiVaultFindEntriesForDomain(domain: domain);
 
+Future<PasskeyItem> generateEntryPasskey(
+        {required String entryId,
+        required String rpId,
+        required String username}) =>
+    RustLib.instance.api.crateApiVaultGenerateEntryPasskey(
+        entryId: entryId, rpId: rpId, username: username);
+
+Future<void> removeEntryPasskey({required String entryId}) =>
+    RustLib.instance.api.crateApiVaultRemoveEntryPasskey(entryId: entryId);
+
+Future<PasskeyAssertionItem> authenticateEntryPasskey(
+        {required String entryId,
+        required String platform,
+        required String origin,
+        required bool userVerified,
+        String? androidPackageName}) =>
+    RustLib.instance.api.crateApiVaultAuthenticateEntryPasskey(
+        entryId: entryId,
+        platform: platform,
+        origin: origin,
+        userVerified: userVerified,
+        androidPackageName: androidPackageName);
+
+Future<bool> signalUnknownPasskey(
+        {required String rpId, required String credentialId}) =>
+    RustLib.instance.api.crateApiVaultSignalUnknownPasskey(
+        rpId: rpId, credentialId: credentialId);
+
+Future<void> changeMasterPassword(
+        {required String currentMaster, required String newMaster}) =>
+    RustLib.instance.api.crateApiVaultChangeMasterPassword(
+        currentMaster: currentMaster, newMaster: newMaster);
+
 class AttachmentItem {
   final String name;
   final int size;
@@ -102,6 +169,70 @@ class AttachmentItem {
           size == other.size;
 }
 
+/// Advanced password generator policy exposed over FFI.
+class CustomPasswordPolicy {
+  final int length;
+  final bool uppercase;
+  final bool digits;
+  final bool symbols;
+  final bool pronounceable;
+  final bool allowAmbiguous;
+  final bool exactMode;
+  final int minUpper;
+  final int minDigits;
+  final int minSymbols;
+  final String excludeChars;
+  final String includeChars;
+
+  const CustomPasswordPolicy({
+    required this.length,
+    required this.uppercase,
+    required this.digits,
+    required this.symbols,
+    required this.pronounceable,
+    required this.allowAmbiguous,
+    required this.exactMode,
+    required this.minUpper,
+    required this.minDigits,
+    required this.minSymbols,
+    required this.excludeChars,
+    required this.includeChars,
+  });
+
+  @override
+  int get hashCode =>
+      length.hashCode ^
+      uppercase.hashCode ^
+      digits.hashCode ^
+      symbols.hashCode ^
+      pronounceable.hashCode ^
+      allowAmbiguous.hashCode ^
+      exactMode.hashCode ^
+      minUpper.hashCode ^
+      minDigits.hashCode ^
+      minSymbols.hashCode ^
+      excludeChars.hashCode ^
+      includeChars.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CustomPasswordPolicy &&
+          runtimeType == other.runtimeType &&
+          length == other.length &&
+          uppercase == other.uppercase &&
+          digits == other.digits &&
+          symbols == other.symbols &&
+          pronounceable == other.pronounceable &&
+          allowAmbiguous == other.allowAmbiguous &&
+          exactMode == other.exactMode &&
+          minUpper == other.minUpper &&
+          minDigits == other.minDigits &&
+          minSymbols == other.minSymbols &&
+          excludeChars == other.excludeChars &&
+          includeChars == other.includeChars;
+}
+
 /// Data from the edit screen. Deliberately no `Debug` (it holds a password).
 class EntryData {
   final String title;
@@ -111,6 +242,12 @@ class EntryData {
   final String notes;
   final String? groupId;
   final String? otp;
+  final PlatformInt64? lastKnownRevisionDate;
+  final String? category;
+  final List<String> tags;
+  final bool isFavorite;
+  final bool isArchived;
+  final bool isTrashed;
 
   const EntryData({
     required this.title,
@@ -120,6 +257,12 @@ class EntryData {
     required this.notes,
     this.groupId,
     this.otp,
+    this.lastKnownRevisionDate,
+    this.category,
+    required this.tags,
+    required this.isFavorite,
+    required this.isArchived,
+    required this.isTrashed,
   });
 
   @override
@@ -130,7 +273,13 @@ class EntryData {
       url.hashCode ^
       notes.hashCode ^
       groupId.hashCode ^
-      otp.hashCode;
+      otp.hashCode ^
+      lastKnownRevisionDate.hashCode ^
+      category.hashCode ^
+      tags.hashCode ^
+      isFavorite.hashCode ^
+      isArchived.hashCode ^
+      isTrashed.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -143,7 +292,13 @@ class EntryData {
           url == other.url &&
           notes == other.notes &&
           groupId == other.groupId &&
-          otp == other.otp;
+          otp == other.otp &&
+          lastKnownRevisionDate == other.lastKnownRevisionDate &&
+          category == other.category &&
+          tags == other.tags &&
+          isFavorite == other.isFavorite &&
+          isArchived == other.isArchived &&
+          isTrashed == other.isTrashed;
 }
 
 /// Everything about an entry except its password.
@@ -155,8 +310,24 @@ class EntryDetails {
   final String notes;
   final String? groupId;
   final String? groupName;
-  final String? otpUri;
+  final bool hasOtp;
   final List<AttachmentItem> attachments;
+  final PasskeyItem? passkey;
+  final bool passkeySupported;
+  final PlatformInt64? revisionDate;
+  final String category;
+  final List<String> tags;
+  final bool isFavorite;
+  final bool isArchived;
+  final bool isTrashed;
+  final bool twoFaSupported;
+  final String passwordStrength;
+  final int strengthScore;
+  final bool isWeak;
+  final bool isIdentical;
+  final bool isCompromised;
+  final bool isBreached;
+  final bool isExpired;
 
   const EntryDetails({
     required this.id,
@@ -166,8 +337,24 @@ class EntryDetails {
     required this.notes,
     this.groupId,
     this.groupName,
-    this.otpUri,
+    required this.hasOtp,
     required this.attachments,
+    this.passkey,
+    required this.passkeySupported,
+    this.revisionDate,
+    required this.category,
+    required this.tags,
+    required this.isFavorite,
+    required this.isArchived,
+    required this.isTrashed,
+    required this.twoFaSupported,
+    required this.passwordStrength,
+    required this.strengthScore,
+    required this.isWeak,
+    required this.isIdentical,
+    required this.isCompromised,
+    required this.isBreached,
+    required this.isExpired,
   });
 
   @override
@@ -179,8 +366,24 @@ class EntryDetails {
       notes.hashCode ^
       groupId.hashCode ^
       groupName.hashCode ^
-      otpUri.hashCode ^
-      attachments.hashCode;
+      hasOtp.hashCode ^
+      attachments.hashCode ^
+      passkey.hashCode ^
+      passkeySupported.hashCode ^
+      revisionDate.hashCode ^
+      category.hashCode ^
+      tags.hashCode ^
+      isFavorite.hashCode ^
+      isArchived.hashCode ^
+      isTrashed.hashCode ^
+      twoFaSupported.hashCode ^
+      passwordStrength.hashCode ^
+      strengthScore.hashCode ^
+      isWeak.hashCode ^
+      isIdentical.hashCode ^
+      isCompromised.hashCode ^
+      isBreached.hashCode ^
+      isExpired.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -194,8 +397,24 @@ class EntryDetails {
           notes == other.notes &&
           groupId == other.groupId &&
           groupName == other.groupName &&
-          otpUri == other.otpUri &&
-          attachments == other.attachments;
+          hasOtp == other.hasOtp &&
+          attachments == other.attachments &&
+          passkey == other.passkey &&
+          passkeySupported == other.passkeySupported &&
+          revisionDate == other.revisionDate &&
+          category == other.category &&
+          tags == other.tags &&
+          isFavorite == other.isFavorite &&
+          isArchived == other.isArchived &&
+          isTrashed == other.isTrashed &&
+          twoFaSupported == other.twoFaSupported &&
+          passwordStrength == other.passwordStrength &&
+          strengthScore == other.strengthScore &&
+          isWeak == other.isWeak &&
+          isIdentical == other.isIdentical &&
+          isCompromised == other.isCompromised &&
+          isBreached == other.isBreached &&
+          isExpired == other.isExpired;
 }
 
 /// One row in the entry list. No secrets.
@@ -205,6 +424,24 @@ class EntryItem {
   final String username;
   final String url;
   final String? groupName;
+  final bool hasPasskey;
+  final bool passkeySupported;
+  final bool hasTotp;
+  final PlatformInt64? revisionDate;
+  final String category;
+  final List<String> tags;
+  final bool isFavorite;
+  final bool isArchived;
+  final bool isTrashed;
+  final bool hasAttachment;
+  final bool twoFaSupported;
+  final String passwordStrength;
+  final int strengthScore;
+  final bool isWeak;
+  final bool isIdentical;
+  final bool isCompromised;
+  final bool isBreached;
+  final bool isExpired;
 
   const EntryItem({
     required this.id,
@@ -212,6 +449,24 @@ class EntryItem {
     required this.username,
     required this.url,
     this.groupName,
+    required this.hasPasskey,
+    required this.passkeySupported,
+    required this.hasTotp,
+    this.revisionDate,
+    required this.category,
+    required this.tags,
+    required this.isFavorite,
+    required this.isArchived,
+    required this.isTrashed,
+    required this.hasAttachment,
+    required this.twoFaSupported,
+    required this.passwordStrength,
+    required this.strengthScore,
+    required this.isWeak,
+    required this.isIdentical,
+    required this.isCompromised,
+    required this.isBreached,
+    required this.isExpired,
   });
 
   @override
@@ -220,7 +475,25 @@ class EntryItem {
       title.hashCode ^
       username.hashCode ^
       url.hashCode ^
-      groupName.hashCode;
+      groupName.hashCode ^
+      hasPasskey.hashCode ^
+      passkeySupported.hashCode ^
+      hasTotp.hashCode ^
+      revisionDate.hashCode ^
+      category.hashCode ^
+      tags.hashCode ^
+      isFavorite.hashCode ^
+      isArchived.hashCode ^
+      isTrashed.hashCode ^
+      hasAttachment.hashCode ^
+      twoFaSupported.hashCode ^
+      passwordStrength.hashCode ^
+      strengthScore.hashCode ^
+      isWeak.hashCode ^
+      isIdentical.hashCode ^
+      isCompromised.hashCode ^
+      isBreached.hashCode ^
+      isExpired.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -231,7 +504,25 @@ class EntryItem {
           title == other.title &&
           username == other.username &&
           url == other.url &&
-          groupName == other.groupName;
+          groupName == other.groupName &&
+          hasPasskey == other.hasPasskey &&
+          passkeySupported == other.passkeySupported &&
+          hasTotp == other.hasTotp &&
+          revisionDate == other.revisionDate &&
+          category == other.category &&
+          tags == other.tags &&
+          isFavorite == other.isFavorite &&
+          isArchived == other.isArchived &&
+          isTrashed == other.isTrashed &&
+          hasAttachment == other.hasAttachment &&
+          twoFaSupported == other.twoFaSupported &&
+          passwordStrength == other.passwordStrength &&
+          strengthScore == other.strengthScore &&
+          isWeak == other.isWeak &&
+          isIdentical == other.isIdentical &&
+          isCompromised == other.isCompromised &&
+          isBreached == other.isBreached &&
+          isExpired == other.isExpired;
 }
 
 class GroupItem {
@@ -256,6 +547,110 @@ class GroupItem {
           id == other.id &&
           name == other.name &&
           entryCount == other.entryCount;
+}
+
+/// WebAuthn `GetAssertion` ceremony response for Windows (`webauthn.dll`) and Android (`CredentialManager`).
+class PasskeyAssertionItem {
+  final String credentialId;
+  final String rpId;
+  final String username;
+  final String userHandle;
+  final String platform;
+  final String authenticatorAttachment;
+  final String authenticatorDataB64Url;
+  final String clientDataJsonB64Url;
+  final String signatureB64Url;
+  final int flags;
+  final bool userVerified;
+  final bool backupEligible;
+  final bool backupState;
+  final int signCount;
+
+  const PasskeyAssertionItem({
+    required this.credentialId,
+    required this.rpId,
+    required this.username,
+    required this.userHandle,
+    required this.platform,
+    required this.authenticatorAttachment,
+    required this.authenticatorDataB64Url,
+    required this.clientDataJsonB64Url,
+    required this.signatureB64Url,
+    required this.flags,
+    required this.userVerified,
+    required this.backupEligible,
+    required this.backupState,
+    required this.signCount,
+  });
+
+  @override
+  int get hashCode =>
+      credentialId.hashCode ^
+      rpId.hashCode ^
+      username.hashCode ^
+      userHandle.hashCode ^
+      platform.hashCode ^
+      authenticatorAttachment.hashCode ^
+      authenticatorDataB64Url.hashCode ^
+      clientDataJsonB64Url.hashCode ^
+      signatureB64Url.hashCode ^
+      flags.hashCode ^
+      userVerified.hashCode ^
+      backupEligible.hashCode ^
+      backupState.hashCode ^
+      signCount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PasskeyAssertionItem &&
+          runtimeType == other.runtimeType &&
+          credentialId == other.credentialId &&
+          rpId == other.rpId &&
+          username == other.username &&
+          userHandle == other.userHandle &&
+          platform == other.platform &&
+          authenticatorAttachment == other.authenticatorAttachment &&
+          authenticatorDataB64Url == other.authenticatorDataB64Url &&
+          clientDataJsonB64Url == other.clientDataJsonB64Url &&
+          signatureB64Url == other.signatureB64Url &&
+          flags == other.flags &&
+          userVerified == other.userVerified &&
+          backupEligible == other.backupEligible &&
+          backupState == other.backupState &&
+          signCount == other.signCount;
+}
+
+/// Non-secret metadata for a KDBX4 Passkey (`KPEX_PASSKEY_*`).
+class PasskeyItem {
+  final String rpId;
+  final String username;
+  final String credentialId;
+  final String userHandle;
+
+  const PasskeyItem({
+    required this.rpId,
+    required this.username,
+    required this.credentialId,
+    required this.userHandle,
+  });
+
+  @override
+  int get hashCode =>
+      rpId.hashCode ^
+      username.hashCode ^
+      credentialId.hashCode ^
+      userHandle.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PasskeyItem &&
+          runtimeType == other.runtimeType &&
+          rpId == other.rpId &&
+          username == other.username &&
+          credentialId == other.credentialId &&
+          userHandle == other.userHandle;
 }
 
 class TotpItem {

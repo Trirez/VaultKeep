@@ -52,6 +52,13 @@ impl Session {
         self.vault()?.password(id)
     }
 
+    pub(crate) fn otp_uri(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, VaultError> {
+        self.vault()?.otp_uri(id)
+    }
+
     /// Add (`id == None`) or update an entry, then persist atomically.
     pub(crate) fn save_entry(
         &mut self,
@@ -64,7 +71,7 @@ impl Session {
                 vault.update(id, input)?;
                 id
             }
-            None => vault.add(input),
+            None => vault.add(input)?,
         };
         vault.save()?;
         Ok(id)
@@ -129,6 +136,99 @@ impl Session {
         domain: &str,
     ) -> Result<Vec<vaultkeep_core::EntrySummary>, VaultError> {
         Ok(self.vault()?.find_for_domain(domain))
+    }
+
+    pub(crate) fn generate_passkey(
+        &mut self,
+        entry_id: Uuid,
+        rp_id: &str,
+        username: &str,
+    ) -> Result<vaultkeep_core::PasskeySummary, VaultError> {
+        self.vault_mut()?
+            .generate_passkey(entry_id, rp_id, username)
+    }
+
+    pub(crate) fn remove_passkey(&mut self, entry_id: Uuid) -> Result<(), VaultError> {
+        self.vault_mut()?.remove_passkey(entry_id)
+    }
+
+    pub(crate) fn authenticate_passkey(
+        &self,
+        entry_id: Uuid,
+        platform: vaultkeep_core::PasskeyPlatform,
+        origin: &str,
+        user_verified: bool,
+        android_package_name: Option<&str>,
+    ) -> Result<vaultkeep_core::PasskeyAssertionResponse, VaultError> {
+        let vault = self.vault()?;
+        let details = vault.details(entry_id)?;
+        let pk = details
+            .passkey
+            .ok_or(VaultError::Policy("entry does not have a bound passkey"))?;
+        let effective_origin = if origin.trim().is_empty() {
+            format!("https://{}", pk.rp_id)
+        } else {
+            origin.to_owned()
+        };
+        let factory = vaultkeep_core::PasskeyChallengeFactory::new(
+            vaultkeep_core::PasskeyTokenConfig::default(),
+        )?;
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let token = factory.mint_challenge(
+            &pk.rp_id,
+            vaultkeep_core::PasskeyCeremonyScope::Authentication,
+            now_unix,
+        )?;
+        vault.authenticate_webauthn_passkey(
+            entry_id,
+            platform,
+            &effective_origin,
+            &token,
+            &factory,
+            now_unix,
+            vaultkeep_core::UserVerificationRequirement::Preferred,
+            user_verified,
+            &[],
+            android_package_name,
+        )
+    }
+
+    pub(crate) fn signal_unknown_credential(
+        &mut self,
+        rp_id: &str,
+        credential_id: &str,
+    ) -> Result<bool, VaultError> {
+        self.vault_mut()?
+            .signal_unknown_credential(rp_id, credential_id)
+    }
+
+    pub(crate) fn change_master_password(
+        &mut self,
+        current_master: &str,
+        new_master: &str,
+    ) -> Result<(), VaultError> {
+        self.vault_mut()?
+            .change_master_password(current_master, new_master)
+    }
+
+    pub(crate) fn set_metadata(
+        &mut self,
+        entry_id: Uuid,
+        meta: &vaultkeep_core::EntryMetadata,
+    ) -> Result<(), VaultError> {
+        self.vault_mut()?.set_entry_metadata(entry_id, meta)
+    }
+
+    pub(crate) fn create_backup(
+        &self,
+        backup_dir: &str,
+        max_backups: usize,
+    ) -> Result<String, VaultError> {
+        let p = self.vault()?.create_backup(backup_dir, max_backups)?;
+        Ok(p.to_string_lossy().into_owned())
     }
 }
 

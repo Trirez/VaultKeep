@@ -30,10 +30,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  CustomPasswordPolicy dco_decode_box_autoadd_custom_password_policy(
+      dynamic raw);
+
+  @protected
   EntryData dco_decode_box_autoadd_entry_data(dynamic raw);
 
   @protected
+  PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
+
+  @protected
+  PasskeyItem dco_decode_box_autoadd_passkey_item(dynamic raw);
+
+  @protected
   TotpItem dco_decode_box_autoadd_totp_item(dynamic raw);
+
+  @protected
+  CustomPasswordPolicy dco_decode_custom_password_policy(dynamic raw);
 
   @protected
   EntryData dco_decode_entry_data(dynamic raw);
@@ -46,6 +59,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   GroupItem dco_decode_group_item(dynamic raw);
+
+  @protected
+  PlatformInt64 dco_decode_i_64(dynamic raw);
+
+  @protected
+  List<String> dco_decode_list_String(dynamic raw);
 
   @protected
   List<AttachmentItem> dco_decode_list_attachment_item(dynamic raw);
@@ -66,7 +85,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
+
+  @protected
+  PasskeyItem? dco_decode_opt_box_autoadd_passkey_item(dynamic raw);
+
+  @protected
   TotpItem? dco_decode_opt_box_autoadd_totp_item(dynamic raw);
+
+  @protected
+  PasskeyAssertionItem dco_decode_passkey_assertion_item(dynamic raw);
+
+  @protected
+  PasskeyItem dco_decode_passkey_item(dynamic raw);
 
   @protected
   TotpItem dco_decode_totp_item(dynamic raw);
@@ -90,10 +121,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  CustomPasswordPolicy sse_decode_box_autoadd_custom_password_policy(
+      SseDeserializer deserializer);
+
+  @protected
   EntryData sse_decode_box_autoadd_entry_data(SseDeserializer deserializer);
 
   @protected
+  PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
+
+  @protected
+  PasskeyItem sse_decode_box_autoadd_passkey_item(SseDeserializer deserializer);
+
+  @protected
   TotpItem sse_decode_box_autoadd_totp_item(SseDeserializer deserializer);
+
+  @protected
+  CustomPasswordPolicy sse_decode_custom_password_policy(
+      SseDeserializer deserializer);
 
   @protected
   EntryData sse_decode_entry_data(SseDeserializer deserializer);
@@ -106,6 +151,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   GroupItem sse_decode_group_item(SseDeserializer deserializer);
+
+  @protected
+  PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+
+  @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
   List<AttachmentItem> sse_decode_list_attachment_item(
@@ -127,7 +178,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
+
+  @protected
+  PasskeyItem? sse_decode_opt_box_autoadd_passkey_item(
+      SseDeserializer deserializer);
+
+  @protected
   TotpItem? sse_decode_opt_box_autoadd_totp_item(SseDeserializer deserializer);
+
+  @protected
+  PasskeyAssertionItem sse_decode_passkey_assertion_item(
+      SseDeserializer deserializer);
+
+  @protected
+  PasskeyItem sse_decode_passkey_item(SseDeserializer deserializer);
 
   @protected
   TotpItem sse_decode_totp_item(SseDeserializer deserializer);
@@ -155,12 +220,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_custom_password_policy(
+      CustomPasswordPolicy self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_entry_data(
       EntryData self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_i_64(
+      PlatformInt64 self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_passkey_item(
+      PasskeyItem self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_totp_item(
       TotpItem self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_custom_password_policy(
+      CustomPasswordPolicy self, SseSerializer serializer);
 
   @protected
   void sse_encode_entry_data(EntryData self, SseSerializer serializer);
@@ -173,6 +254,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_group_item(GroupItem self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_attachment_item(
@@ -197,8 +284,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_i_64(
+      PlatformInt64? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_passkey_item(
+      PasskeyItem? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_box_autoadd_totp_item(
       TotpItem? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_passkey_assertion_item(
+      PasskeyAssertionItem self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_passkey_item(PasskeyItem self, SseSerializer serializer);
 
   @protected
   void sse_encode_totp_item(TotpItem self, SseSerializer serializer);

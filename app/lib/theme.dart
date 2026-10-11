@@ -23,7 +23,19 @@ class TacticalTheme {
   static const Color cyanTactical = Color(0xFF06B6D4);
   static const Color cyanDim = Color(0xFF0B2E38);
   static const Color emeraldReady = Color(0xFF10B981);
+  static const Color emeraldDim = Color(0xFF063225);
   static const Color crimsonDanger = Color(0xFFEF4444);
+  static const Color crimsonDim = Color(0xFF2D1215);
+  static const Color crimsonLight = Color(0xFFFCA5A5);
+  static const Color shadowColor = Color(0x66000000);
+
+  // Domain Avatar Brand Accents
+  static const Color brandGithub = Color(0xFFF3F4F6);
+  static const Color brandAws = Color(0xFFFF9900);
+  static const Color brandGoogle = Color(0xFF38BDF8);
+  static const Color brandProton = Color(0xFFA855F7);
+  static const Color brandFinance = Color(0xFF10B981);
+  static const Color brandCloudflare = Color(0xFFF97316);
 
   // Typography Colors
   static const Color textPrimary = Color(0xFFF3F4F6);
@@ -55,11 +67,11 @@ class TacticalTheme {
       surface: bgPanel,
       onSurface: textPrimary,
       primary: amberPrimary,
-      onPrimary: Color(0xFF090A0F),
+      onPrimary: bgDeepCarbon,
       primaryContainer: amberDim,
       onPrimaryContainer: amberBright,
       secondary: cyanTactical,
-      onSecondary: Color(0xFF090A0F),
+      onSecondary: bgDeepCarbon,
       secondaryContainer: cyanDim,
       onSecondaryContainer: cyanTactical,
       error: crimsonDanger,
@@ -253,24 +265,24 @@ class TacticalDomainAvatar extends StatelessWidget {
 
     if (lower.contains('github')) {
       icon = Icons.code;
-      accent = const Color(0xFFF3F4F6);
+      accent = TacticalTheme.brandGithub;
     } else if (lower.contains('aws') || lower.contains('amazon')) {
       label = 'aws';
-      accent = const Color(0xFFFF9900);
+      accent = TacticalTheme.brandAws;
     } else if (lower.contains('google') || lower.contains('gmail')) {
       label = 'G';
-      accent = const Color(0xFF38BDF8);
+      accent = TacticalTheme.brandGoogle;
     } else if (lower.contains('proton')) {
       icon = Icons.shield_outlined;
-      accent = const Color(0xFFA855F7);
+      accent = TacticalTheme.brandProton;
     } else if (lower.contains('stripe') ||
         lower.contains('bank') ||
         lower.contains('finance')) {
       icon = Icons.account_balance_outlined;
-      accent = const Color(0xFF10B981);
+      accent = TacticalTheme.brandFinance;
     } else if (lower.contains('cloudflare') || lower.contains('server')) {
       icon = Icons.dns_outlined;
-      accent = const Color(0xFFF97316);
+      accent = TacticalTheme.brandCloudflare;
     }
 
     return Container(
@@ -330,6 +342,73 @@ class TacticalActionSquare extends StatelessWidget {
           ),
           child: Icon(icon, size: 15, color: color),
         ),
+      ),
+    );
+  }
+}
+
+/// Renders a revealed password with character-class color differentiation
+/// (letters in `textPrimary`, digits in `cyanTactical`, symbols in `amberBright`)
+/// and accessible screen-reader character semantics.
+class TacticalColorPassword extends StatelessWidget {
+  const TacticalColorPassword({
+    super.key,
+    required this.password,
+    this.fontSize = 13,
+  });
+
+  final String password;
+  final double fontSize;
+
+  static final RegExp _letterRegex = RegExp(r'[a-zA-Z]');
+  static final RegExp _digitRegex = RegExp(r'[0-9]');
+
+  static String describeForAccessibility(String value) {
+    final parts = <String>[];
+    for (final rune in value.runes) {
+      final ch = String.fromCharCode(rune);
+      if (_digitRegex.hasMatch(ch)) {
+        parts.add('digit $ch');
+      } else if (_letterRegex.hasMatch(ch)) {
+        final isUpper = ch == ch.toUpperCase() && ch != ch.toLowerCase();
+        parts.add('${isUpper ? "uppercase" : "lowercase"} $ch');
+      } else {
+        parts.add('symbol $ch');
+      }
+    }
+    return parts.join(', ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final spans = <TextSpan>[];
+    for (final rune in password.runes) {
+      final ch = String.fromCharCode(rune);
+      final Color color;
+      if (_digitRegex.hasMatch(ch)) {
+        color = TacticalTheme.cyanTactical;
+      } else if (_letterRegex.hasMatch(ch)) {
+        color = TacticalTheme.textPrimary;
+      } else {
+        color = TacticalTheme.amberBright;
+      }
+      spans.add(
+        TextSpan(
+          text: ch,
+          style: TacticalTheme.monoStyle(
+            fontSize: fontSize,
+            fontWeight: FontWeight.w600,
+            color: color,
+          ),
+        ),
+      );
+    }
+
+    return Semantics(
+      label: describeForAccessibility(password),
+      excludeSemantics: true,
+      child: SelectableText.rich(
+        TextSpan(children: spans),
       ),
     );
   }

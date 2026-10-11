@@ -18,44 +18,25 @@ cargo run -p vaultkeep-cli -- my.kdbx list
 ```
 
 ## Run the Flutter app
-Follow `docs/FLUTTER_SETUP.md`. The Flutter code has not been compiled yet, so the first run needs the setup steps there.
+`flutter_rust_bridge 2.13.0` bindings (`app/lib/src/rust/**`, `app/rust/src/frb_generated.rs`) and platform runners are configured in `app/`. See `docs/FLUTTER_SETUP.md` for toolchain prerequisites and binding regeneration steps.
+
+## Development Plan & Verification Checklist
+See `docs/NEXT_STEPS.md` for the staged **M0–M6 Development Plan**, baseline commands, and working security verification checklist.
+See `docs/ARCHITECTURE.md` for the system design and current verified status.
+See `docs/SECURITY_AUDIT_LOG.md` for the security audit ledger and vulnerability remediations.
 
 ## Building it with Antigravity
-Open this folder in Antigravity; skills in `.agent/skills/` are picked up automatically (restart the agent session if they do not appear). Example prompts:
+Open this folder in Antigravity; project rules in `GEMINI.md` and `.agent/rules/project.md` and workspace skills in `.agent/skills/` and `.agents/skills/` are loaded automatically:
+- `/vault-planner`, `/security-docs`, `/release-supply-chain` — planning, docs, and release verification
+- `/vault-core-dev`, `/rust-vault-security`, `/zero-knowledge-key-rotation`, `/cqs-zero-downtime-storage`, `/test-hardening`, `/kdbx-interop-testing` — Rust KDBX4 core, Argon2id key rotation, CQS & adversarial testing
+- `/flutter-rust-bridge`, `/flutter-rust-boundary`, `/flutter-frontend`, `/vault-ui-components`, `/vault-entry-type-planner`, `/mobile-integration` — FFI bridge, TacticalTheme UI components, entry types & mobile security
+- `/vault-sync-concurrency`, `/encrypted-cloud-sync`, `/prelogin-auth-tokenables` — optimistic concurrency, 3-way merge & M6+ cloud sync architecture
+- `/security-review` — pre-merge security gate (`.agent/workflows/verify.md`)
 
-- "Follow docs/FLUTTER_SETUP.md and get the app running on Linux. Use the flutter-rust-bridge skill."
-- "Use vault-core-dev, flutter-rust-bridge and flutter-frontend to add groups."
-- "Use mobile-integration to add screenshot protection on Android."
-- "Run the verify workflow."
-- "Use security-review on my last change."
-
-See `docs/ARCHITECTURE.md` for the design and current status.
-See `docs/SECURITY_AUDIT_LOG.md` for the security audit ledger and history of vulnerability fixes.
+Review each generated change yourself. Skills are guidance for an agent, not a security certification.
 
 ## License
 GPL-3.0-or-later (chosen to stay compatible with KeePassXC's license; change in `Cargo.toml` if you prefer another).
 
-## Recommended first-release scope
-- Local-only encrypted vault
-- Master password unlock
-- Rust-owned cryptographic boundary
-- Password generator
-- Encrypted export/import and verified restore
-- Google Drive app-data folder OR user-visible file backup (choose intentionally)
-- OneDrive app-folder support
-- Conflict detection and retained versions
-- No hosted account system in v1
-
-## Antigravity installation
-Copy the `.agents/` directory into the root of your project repository. Antigravity's current default workspace skill path is `.agents/skills/`; older `.agent/skills/` is supported by some versions. Open/reload the workspace, then invoke a skill by slash command, for example:
-- `/vault-planner`
-- `/rust-vault-security`
-- `/flutter-rust-boundary`
-- `/encrypted-cloud-sync`
-- `/security-review`
-- `/test-hardening`
-
-Review each generated change yourself. Skills are guidance for an agent, not a security certification.
-
 ## Safety note
-This kit is a development planning aid, not a cryptographic design review. Do not ship a password manager or claim it is secure until the implementation has been reviewed by experienced security engineers and independently audited.
+Do not ship a password manager for production use or claim it is audited until the implementation has been reviewed by experienced security engineers and independently audited.

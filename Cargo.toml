@@ -14,8 +14,9 @@ thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
 rand = "0.8"
 tempfile = "3"
-uuid = "1.27.0"
+uuid = { version = "1.27.0", features = ["v7"] }
 proptest = "1.6"
+ring = "0.17.14"
 
 [profile.release]
 lto = true

@@ -235,7 +235,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
                             ),
                             boxShadow: const [
                               BoxShadow(
-                                color: Color(0x66000000),
+                                color: TacticalTheme.shadowColor,
                                 blurRadius: 24,
                                 offset: Offset(0, 12),
                               ),
@@ -358,6 +358,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
 
                                     // Vault Path Input
                                     TextField(
+                                      key: const ValueKey('unlock_field_path'),
                                       controller: _path,
                                       style: TacticalTheme.monoStyle(
                                         fontSize: 12,
@@ -385,10 +386,14 @@ class _UnlockScreenState extends State<UnlockScreen> {
 
                                     // Master Password Input
                                     TextField(
+                                      key: const ValueKey(
+                                        'unlock_field_master',
+                                      ),
                                       controller: _master,
                                       obscureText: !_show,
                                       enableSuggestions: false,
                                       autocorrect: false,
+                                      enableIMEPersonalizedLearning: false,
                                       style: TacticalTheme.monoStyle(
                                         fontSize: 13,
                                         color: TacticalTheme.textPrimary,
@@ -454,10 +459,14 @@ class _UnlockScreenState extends State<UnlockScreen> {
                                       ),
                                       const SizedBox(height: 16),
                                       TextField(
+                                        key: const ValueKey(
+                                          'unlock_field_confirm',
+                                        ),
                                         controller: _confirm,
                                         obscureText: !_show,
                                         enableSuggestions: false,
                                         autocorrect: false,
+                                        enableIMEPersonalizedLearning: false,
                                         style: TacticalTheme.monoStyle(
                                           fontSize: 13,
                                           color: TacticalTheme.textPrimary,
@@ -465,6 +474,41 @@ class _UnlockScreenState extends State<UnlockScreen> {
                                         onSubmitted: (_) => _submit(),
                                         decoration: const InputDecoration(
                                           labelText: 'Repeat master password',
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Container(
+                                        padding: const EdgeInsets.all(10),
+                                        decoration: BoxDecoration(
+                                          color: TacticalTheme.amberDim,
+                                          borderRadius:
+                                              BorderRadius.circular(4),
+                                          border: Border.all(
+                                            color: TacticalTheme.amberPrimary,
+                                            width: 1,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const Icon(
+                                              Icons.privacy_tip_outlined,
+                                              size: 16,
+                                              color: TacticalTheme.amberBright,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                'Zero-Knowledge Warning: Your master password is never stored or transmitted. If lost, your vault cannot be recovered.',
+                                                style: TacticalTheme.monoStyle(
+                                                  fontSize: 11,
+                                                  color:
+                                                      TacticalTheme.amberBright,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
                                     ],
@@ -475,7 +519,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
                                       Container(
                                         padding: const EdgeInsets.all(10),
                                         decoration: BoxDecoration(
-                                          color: const Color(0xFF2D1215),
+                                          color: TacticalTheme.crimsonDim,
                                           borderRadius:
                                               BorderRadius.circular(4),
                                           border: Border.all(
@@ -497,7 +541,8 @@ class _UnlockScreenState extends State<UnlockScreen> {
                                                 message,
                                                 style: TacticalTheme.monoStyle(
                                                   fontSize: 11,
-                                                  color: const Color(0xFFFCA5A5),
+                                                  color: TacticalTheme
+                                                      .crimsonLight,
                                                 ),
                                               ),
                                             ),
@@ -510,6 +555,9 @@ class _UnlockScreenState extends State<UnlockScreen> {
 
                                     // Submit CTA
                                     FilledButton(
+                                      key: const ValueKey(
+                                        'unlock_button_submit',
+                                      ),
                                       onPressed: c.busy ? null : _submit,
                                       child: c.busy
                                           ? const SizedBox(

@@ -4,8 +4,11 @@ import '../backend.dart';
 import '../clipboard_guard.dart';
 import '../theme.dart';
 import '../vault_controller.dart';
+import 'enpass_settings_dialog.dart';
 import 'entry_screen.dart';
 import 'file_picker_dialog.dart';
+import 'home_dashboard_pane.dart';
+import 'password_generator_sheet.dart';
 
 class VaultScreen extends StatefulWidget {
   const VaultScreen({super.key, required this.controller});
@@ -22,15 +25,42 @@ class _VaultScreenState extends State<VaultScreen> {
 
   VaultController get controller => widget.controller;
 
+  static IconData _iconForCategory(String category) {
+    switch (category.toLowerCase()) {
+      case 'login':
+        return Icons.language;
+      case 'credit card':
+        return Icons.credit_card;
+      case 'identity':
+        return Icons.badge_outlined;
+      case 'note':
+        return Icons.sticky_note_2_outlined;
+      case 'password':
+        return Icons.key_outlined;
+      case 'finance':
+        return Icons.account_balance_outlined;
+      case 'license':
+        return Icons.workspace_premium_outlined;
+      case 'travel':
+        return Icons.flight_takeoff;
+      case 'computer':
+        return Icons.computer_outlined;
+      default:
+        return Icons.extension_outlined;
+    }
+  }
+
   Future<void> _copyPassword(BuildContext context, VaultItem item) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final password = await controller.revealPassword(item.id);
+      if (!context.mounted || controller.status != VaultStatus.unlocked) return;
       await ClipboardGuard.copySecret(password);
       messenger.showSnackBar(
         const SnackBar(content: Text('Password copied. Clears in 15 seconds.')),
       );
     } catch (e) {
+      if (!context.mounted || controller.status != VaultStatus.unlocked) return;
       messenger.showSnackBar(
         SnackBar(content: Text(VaultController.describe(e))),
       );
@@ -44,6 +74,170 @@ class _VaultScreenState extends State<VaultScreen> {
     messenger.showSnackBar(
       const SnackBar(content: Text('Username copied. Clears in 15 seconds.')),
     );
+  }
+
+  Future<void> _copyTotp(BuildContext context, VaultItem item) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final totp = await controller.getTotp(item.id);
+      if (!context.mounted ||
+          controller.status != VaultStatus.unlocked ||
+          totp == null) {
+        return;
+      }
+      await ClipboardGuard.copySecret(totp.code);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('TOTP code copied. Clears in 15 seconds.')),
+      );
+    } catch (e) {
+      if (!context.mounted || controller.status != VaultStatus.unlocked) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text(VaultController.describe(e))),
+      );
+    }
+  }
+
+  Future<void> _changeMasterPassword(BuildContext context) async {
+    final currentCtrl = TextEditingController();
+    final newCtrl = TextEditingController();
+    final confirmCtrl = TextEditingController();
+    String? dialogError;
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.vpn_key_outlined, color: TacticalTheme.amberPrimary),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text('Rotate Master Password'),
+                ),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Atomically re-encrypt this KDBX4 vault with a new master password (Argon2id) and advance all entry revision timestamps.',
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    key: const ValueKey('rotate_field_current'),
+                    controller: currentCtrl,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    enableIMEPersonalizedLearning: false,
+                    style: TacticalTheme.monoStyle(fontSize: 12),
+                    decoration: const InputDecoration(
+                      labelText: 'Current master password',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    key: const ValueKey('rotate_field_new'),
+                    controller: newCtrl,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    enableIMEPersonalizedLearning: false,
+                    style: TacticalTheme.monoStyle(fontSize: 12),
+                    decoration: const InputDecoration(
+                      labelText: 'New master password (min 12 chars)',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    key: const ValueKey('rotate_field_confirm'),
+                    controller: confirmCtrl,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    enableIMEPersonalizedLearning: false,
+                    style: TacticalTheme.monoStyle(fontSize: 12),
+                    decoration: const InputDecoration(
+                      labelText: 'Repeat new master password',
+                    ),
+                  ),
+                  if (dialogError != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      dialogError!,
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 11,
+                        color: TacticalTheme.crimsonLight,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                key: const ValueKey('rotate_button_submit'),
+                onPressed: () {
+                  if (currentCtrl.text.isEmpty) {
+                    setDialogState(
+                      () => dialogError = 'Enter your current master password.',
+                    );
+                    return;
+                  }
+                  if (newCtrl.text.length < 12) {
+                    setDialogState(
+                      () => dialogError =
+                          'New master password must be at least 12 characters.',
+                    );
+                    return;
+                  }
+                  if (newCtrl.text != confirmCtrl.text) {
+                    setDialogState(
+                      () => dialogError = 'New passwords do not match.',
+                    );
+                    return;
+                  }
+                  Navigator.of(ctx).pop(true);
+                },
+                child: const Text('Rotate Password'),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      if (confirmed == true && context.mounted) {
+        final messenger = ScaffoldMessenger.of(context);
+        try {
+          await controller.changeMasterPassword(
+            currentCtrl.text,
+            newCtrl.text,
+          );
+          messenger.showSnackBar(
+            const SnackBar(
+              content: Text('Master password rotated and vault re-encrypted.'),
+            ),
+          );
+        } catch (e) {
+          messenger.showSnackBar(
+            SnackBar(content: Text(VaultController.describe(e))),
+          );
+        }
+      }
+    } finally {
+      currentCtrl.text = '';
+      newCtrl.text = '';
+      confirmCtrl.text = '';
+      currentCtrl.dispose();
+      newCtrl.dispose();
+      confirmCtrl.dispose();
+    }
   }
 
   void _openEntry(BuildContext context, {String? id, required bool isDesktop}) {
@@ -172,6 +366,9 @@ class _VaultScreenState extends State<VaultScreen> {
                   TextField(
                     controller: passCtrl,
                     obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    enableIMEPersonalizedLearning: false,
                     style: TacticalTheme.monoStyle(fontSize: 12),
                     decoration: const InputDecoration(
                       labelText: 'Replica master password',
@@ -296,17 +493,41 @@ class _VaultScreenState extends State<VaultScreen> {
                         color: TacticalTheme.amberPrimary,
                       ),
                       onPressed: () async {
-                        final res = await controller.findEntriesForDomain(
-                          queryCtrl.text.trim(),
-                        );
-                        setSheetState(() => matches = res);
+                        try {
+                          final res = await controller.findEntriesForDomain(
+                            queryCtrl.text.trim(),
+                          );
+                          if (!ctx.mounted ||
+                              controller.status != VaultStatus.unlocked) {
+                            return;
+                          }
+                          setSheetState(() => matches = res);
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              SnackBar(content: Text('$e')),
+                            );
+                          }
+                        }
                       },
                     ),
                   ),
                   onSubmitted: (val) async {
-                    final res =
-                        await controller.findEntriesForDomain(val.trim());
-                    setSheetState(() => matches = res);
+                    try {
+                      final res =
+                          await controller.findEntriesForDomain(val.trim());
+                      if (!ctx.mounted ||
+                          controller.status != VaultStatus.unlocked) {
+                        return;
+                      }
+                      setSheetState(() => matches = res);
+                    } catch (e) {
+                      if (ctx.mounted) {
+                        ScaffoldMessenger.of(ctx).showSnackBar(
+                          SnackBar(content: Text('$e')),
+                        );
+                      }
+                    }
                   },
                 ),
                 const SizedBox(height: 12),
@@ -340,16 +561,29 @@ class _VaultScreenState extends State<VaultScreen> {
                               color: TacticalTheme.amberPrimary,
                             ),
                             onPressed: () async {
-                              final pw =
-                                  await controller.revealPassword(item.id);
-                              await ClipboardGuard.copySecret(pw);
-                              if (ctx.mounted) {
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  const SnackBar(
-                                    content:
-                                        Text('Password copied for autofill.'),
-                                  ),
-                                );
+                              try {
+                                final pw =
+                                    await controller.revealPassword(item.id);
+                                if (!ctx.mounted ||
+                                    controller.status !=
+                                        VaultStatus.unlocked) {
+                                  return;
+                                }
+                                await ClipboardGuard.copySecret(pw);
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    const SnackBar(
+                                      content:
+                                          Text('Password copied for autofill.'),
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    SnackBar(content: Text('$e')),
+                                  );
+                                }
                               }
                             },
                           ),
@@ -405,16 +639,16 @@ class _VaultScreenState extends State<VaultScreen> {
             color: TacticalTheme.amberPrimary,
           ),
           const SizedBox(width: 8),
-          const Text(
-            'VaultKeep',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              color: TacticalTheme.textPrimary,
-              letterSpacing: 0.4,
-            ),
-          ),
           if (isWide) ...[
+            const Text(
+              'VaultKeep',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: TacticalTheme.textPrimary,
+                letterSpacing: 0.4,
+              ),
+            ),
             const SizedBox(width: 10),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -432,8 +666,20 @@ class _VaultScreenState extends State<VaultScreen> {
                 ),
               ),
             ),
-          ],
-          const Spacer(),
+            const Spacer(),
+          ] else
+            const Expanded(
+              child: Text(
+                'VaultKeep',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: TacticalTheme.textPrimary,
+                  letterSpacing: 0.4,
+                ),
+              ),
+            ),
           if (isWide) ...[
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -446,14 +692,14 @@ class _VaultScreenState extends State<VaultScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    'CLIPBOARD GUARD: ',
+                    'SECURITY SCORE: ',
                     style: TacticalTheme.monoStyle(
                       fontSize: 11,
                       color: TacticalTheme.textSecondary,
                     ),
                   ),
                   Text(
-                    'READY (15s)',
+                    '${controller.overallSecurityScore}% (${controller.overallSecurityLabel})',
                     style: TacticalTheme.monoStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
@@ -466,13 +712,63 @@ class _VaultScreenState extends State<VaultScreen> {
             const SizedBox(width: 8),
           ],
           IconButton(
+            key: const ValueKey('vault_button_password_generator'),
+            tooltip: 'Password Generator',
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(6),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            icon: const Icon(
+              Icons.password,
+              size: 19,
+              color: TacticalTheme.amberBright,
+            ),
+            onPressed: () => PasswordGeneratorDialog.show(
+              context,
+              controller: controller,
+            ),
+          ),
+          IconButton(
             tooltip: 'Autofill Query',
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(6),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
             icon: const Icon(
               Icons.auto_mode,
               size: 19,
               color: TacticalTheme.cyanTactical,
             ),
             onPressed: () => _showAutofillModal(context),
+          ),
+          IconButton(
+            key: const ValueKey('vault_button_rotate_password'),
+            tooltip: 'Rotate Master Password',
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(6),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            icon: const Icon(
+              Icons.vpn_key_outlined,
+              size: 19,
+              color: TacticalTheme.amberPrimary,
+            ),
+            onPressed: () => _changeMasterPassword(context),
+          ),
+          IconButton(
+            key: const ValueKey('vault_button_settings'),
+            tooltip: 'Settings',
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(6),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            icon: const Icon(
+              Icons.settings_outlined,
+              size: 19,
+              color: TacticalTheme.textPrimary,
+            ),
+            onPressed: () => EnpassSettingsDialog.show(
+              context,
+              controller: controller,
+              onChangeMasterPassword: () => _changeMasterPassword(context),
+              onSyncVault: () => _syncVault(context),
+            ),
           ),
           if (isWide)
             Padding(
@@ -505,6 +801,9 @@ class _VaultScreenState extends State<VaultScreen> {
           else
             IconButton(
               tooltip: 'Sync Vault (3-Way Merge)',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
               icon: const Icon(
                 Icons.sync,
                 size: 19,
@@ -513,7 +812,6 @@ class _VaultScreenState extends State<VaultScreen> {
               onPressed: () => _syncVault(context),
             ),
           if (isWide)
-            // Keep an accessible tooltip wrapper so find.byTooltip('Sync Vault (3-Way Merge)') always works
             const Tooltip(
               message: 'Sync Vault (3-Way Merge)',
               child: SizedBox.shrink(),
@@ -523,6 +821,7 @@ class _VaultScreenState extends State<VaultScreen> {
             Tooltip(
               message: 'Lock now',
               child: InkWell(
+                key: const ValueKey('vault_button_lock'),
                 onTap: () => controller.lock(),
                 borderRadius: BorderRadius.circular(4),
                 child: Container(
@@ -560,7 +859,11 @@ class _VaultScreenState extends State<VaultScreen> {
             )
           else
             IconButton(
+              key: const ValueKey('vault_button_lock'),
               tooltip: 'Lock now',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
               icon: const Icon(
                 Icons.lock_outline,
                 size: 19,
@@ -579,8 +882,11 @@ class _VaultScreenState extends State<VaultScreen> {
     String? selectedGroupId,
     int totalCount,
   ) {
+    final showCounts = controller.showSidebarCounts;
+    final tags = controller.allTags;
+
     return Container(
-      width: 240,
+      width: 248,
       decoration: const BoxDecoration(
         color: TacticalTheme.bgPanel,
         border: Border(
@@ -601,21 +907,31 @@ class _VaultScreenState extends State<VaultScreen> {
             child: Column(
               children: [
                 const SizedBox(height: 10),
-                Container(
-                  width: 30,
-                  height: 30,
-                  decoration: BoxDecoration(
-                    color: TacticalTheme.amberDim,
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: TacticalTheme.amberPrimary,
-                      width: 1,
+                Tooltip(
+                  message: 'Home Security Audit',
+                  child: InkWell(
+                    onTap: () => controller.openHomeDashboard(),
+                    child: Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: controller.showHomeDashboard
+                            ? TacticalTheme.amberPrimary
+                            : TacticalTheme.amberDim,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: TacticalTheme.amberPrimary,
+                          width: 1,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.shield_outlined,
+                        size: 16,
+                        color: controller.showHomeDashboard
+                            ? TacticalTheme.bgDeepCarbon
+                            : TacticalTheme.amberBright,
+                      ),
                     ),
-                  ),
-                  child: const Icon(
-                    Icons.folder,
-                    size: 16,
-                    color: TacticalTheme.amberBright,
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -637,6 +953,21 @@ class _VaultScreenState extends State<VaultScreen> {
                   ),
                   onPressed: () => _createGroup(context),
                 ),
+                IconButton(
+                  tooltip: 'Settings',
+                  icon: const Icon(
+                    Icons.settings_outlined,
+                    size: 18,
+                    color: TacticalTheme.textSecondary,
+                  ),
+                  onPressed: () => EnpassSettingsDialog.show(
+                    context,
+                    controller: controller,
+                    onChangeMasterPassword: () =>
+                        _changeMasterPassword(context),
+                    onSyncVault: () => _syncVault(context),
+                  ),
+                ),
                 const Spacer(),
                 IconButton(
                   tooltip: 'Lock Vault',
@@ -652,7 +983,7 @@ class _VaultScreenState extends State<VaultScreen> {
             ),
           ),
 
-          // Group Tree Column
+          // Enpass Sidebar + Group Tree Column
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -696,16 +1027,287 @@ class _VaultScreenState extends State<VaultScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     children: [
                       _GroupTreeTile(
-                        name: 'All Credentials',
+                        key: const ValueKey('sidebar_home'),
+                        name: 'Home',
                         count: totalCount,
-                        selected: selectedGroupId == null,
+                        showCount: showCounts,
+                        selected: controller.showHomeDashboard,
+                        icon: Icons.home_outlined,
+                        onTap: () => controller.openHomeDashboard(),
+                      ),
+                      _GroupTreeTile(
+                        name: 'All Items',
+                        count: totalCount,
+                        showCount: showCounts,
+                        selected: !controller.showHomeDashboard &&
+                            selectedGroupId == null &&
+                            controller.selectedCategory ==
+                                VaultCategoryFilter.all &&
+                            controller.selectedItemCategory == null &&
+                            controller.selectedTag == null,
                         icon: Icons.folder_special,
                         onTap: () => controller.selectGroup(null),
                       ),
+                      _GroupTreeTile(
+                        key: const ValueKey('sidebar_favorites'),
+                        name: 'Favorites',
+                        count: controller.favoritesCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.favorites,
+                        icon: Icons.star_outline,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.favorites,
+                        ),
+                      ),
+
+                      // Categories (All 10 Enpass Categories)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+                        child: Text(
+                          'CATEGORIES',
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: TacticalTheme.textMuted,
+                            letterSpacing: 1.0,
+                          ),
+                        ),
+                      ),
+                      for (final cat in kEnpassCategories)
+                        _GroupTreeTile(
+                          key: ValueKey('sidebar_cat_$cat'),
+                          name: cat,
+                          count: controller.categoryCount(cat),
+                          showCount: showCounts,
+                          selected: controller.selectedItemCategory == cat,
+                          icon: _iconForCategory(cat),
+                          onTap: () => controller.selectItemCategory(
+                            controller.selectedItemCategory == cat ? null : cat,
+                          ),
+                        ),
+
+                      // Audit Section (`Enpass_UNGNDpANfa.png`)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+                        child: Text(
+                          'AUDIT',
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: TacticalTheme.textMuted,
+                            letterSpacing: 1.0,
+                          ),
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Excellent',
+                        count: controller.excellentCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.auditExcellent,
+                        icon: Icons.verified_outlined,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.auditExcellent,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Compromised',
+                        count: controller.compromisedCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.auditCompromised,
+                        icon: Icons.gpp_bad_outlined,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.auditCompromised,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Weak',
+                        count: controller.weakCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.auditWeak,
+                        icon: Icons.warning_amber_rounded,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.auditWeak,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Identical',
+                        count: controller.identicalCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.auditIdentical,
+                        icon: Icons.copy_all_outlined,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.auditIdentical,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Breached',
+                        count: controller.breachedCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.auditBreached,
+                        icon: Icons.report_problem_outlined,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.auditBreached,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Passkey Supported',
+                        count: controller.passkeySupportedCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.passkeySupported,
+                        icon: Icons.verified_user_outlined,
+                        onTap: () => controller.selectCategory(
+                          controller.selectedCategory ==
+                                  VaultCategoryFilter.passkeySupported
+                              ? VaultCategoryFilter.all
+                              : VaultCategoryFilter.passkeySupported,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: '2FA (TOTP)',
+                        count: controller.totpCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.totp2fa,
+                        icon: Icons.timer_outlined,
+                        onTap: () => controller.selectCategory(
+                          controller.selectedCategory ==
+                                  VaultCategoryFilter.totp2fa
+                              ? VaultCategoryFilter.all
+                              : VaultCategoryFilter.totp2fa,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Expired',
+                        count: controller.expiredCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.auditExpired,
+                        icon: Icons.schedule_outlined,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.auditExpired,
+                        ),
+                      ),
+
+                      // Others Section (`Enpass_UNGNDpANfa.png`)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+                        child: Text(
+                          'OTHERS',
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: TacticalTheme.textMuted,
+                            letterSpacing: 1.0,
+                          ),
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Passkeys',
+                        count: controller.passkeyCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.passkeys,
+                        icon: Icons.fingerprint,
+                        onTap: () => controller.selectCategory(
+                          controller.selectedCategory ==
+                                  VaultCategoryFilter.passkeys
+                              ? VaultCategoryFilter.all
+                              : VaultCategoryFilter.passkeys,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Attachments',
+                        count: controller.attachmentsCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.attachments,
+                        icon: Icons.attach_file,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.attachments,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Archived',
+                        count: controller.archivedCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.archived,
+                        icon: Icons.archive_outlined,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.archived,
+                        ),
+                      ),
+                      _GroupTreeTile(
+                        name: 'Trashed',
+                        count: controller.trashedCount,
+                        showCount: showCounts,
+                        selected: controller.selectedCategory ==
+                            VaultCategoryFilter.trashed,
+                        icon: Icons.delete_outline,
+                        onTap: () => controller.selectCategory(
+                          VaultCategoryFilter.trashed,
+                        ),
+                      ),
+
+                      // Tags Section
+                      if (tags.isNotEmpty) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+                          child: Text(
+                            'TAGS',
+                            style: TacticalTheme.monoStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: TacticalTheme.textMuted,
+                              letterSpacing: 1.0,
+                            ),
+                          ),
+                        ),
+                        for (final t in tags)
+                          _GroupTreeTile(
+                            name: t,
+                            count: controller.activeItems
+                                .where(
+                                  (i) => i.tags.any(
+                                    (x) =>
+                                        x.toLowerCase() == t.toLowerCase(),
+                                  ),
+                                )
+                                .length,
+                            showCount: showCounts,
+                            selected: controller.selectedTag == t,
+                            icon: Icons.sell_outlined,
+                            onTap: () => controller.selectTag(
+                              controller.selectedTag == t ? null : t,
+                            ),
+                          ),
+                      ],
+
+                      if (groups.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+                          child: Text(
+                            'GROUPS',
+                            style: TacticalTheme.monoStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: TacticalTheme.textMuted,
+                              letterSpacing: 1.0,
+                            ),
+                          ),
+                        ),
                       for (final g in groups)
                         _GroupTreeTile(
                           name: g.name,
                           count: g.entryCount,
+                          showCount: showCounts,
                           selected: selectedGroupId == g.id,
                           icon: Icons.folder,
                           onTap: () => controller.selectGroup(
@@ -752,6 +1354,7 @@ class _VaultScreenState extends State<VaultScreen> {
     final groupLabel = _resolveGroupLabel(item, groups);
 
     return InkWell(
+      key: ValueKey('vault_row_${item.id}'),
       onTap: () => _openEntry(context, id: item.id, isDesktop: isDesktop),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -772,40 +1375,115 @@ class _VaultScreenState extends State<VaultScreen> {
         ),
         child: Row(
           children: [
-            TacticalDomainAvatar(
-              title: item.title,
-              url: item.url,
-              size: 32,
-            ),
-            const SizedBox(width: 12),
+            if (controller.showWebsiteIcons) ...[
+              TacticalDomainAvatar(
+                title: item.title,
+                url: item.url,
+                size: 32,
+              ),
+              const SizedBox(width: 12),
+            ],
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    item.title,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: TacticalTheme.textPrimary,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          item.title,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: TacticalTheme.textPrimary,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (item.isFavorite) ...[
+                        const SizedBox(width: 6),
+                        const Icon(
+                          Icons.star,
+                          size: 14,
+                          color: TacticalTheme.amberBright,
+                        ),
+                      ],
+                      if (item.hasPasskey) ...[
+                        const SizedBox(width: 6),
+                        const Icon(
+                          Icons.fingerprint,
+                          size: 14,
+                          color: TacticalTheme.emeraldReady,
+                        ),
+                      ],
+                    ],
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    item.username.isEmpty ? item.url : item.username,
-                    style: TacticalTheme.monoStyle(
-                      fontSize: 11,
-                      color: TacticalTheme.textSecondary,
+                  if (controller.showSubtitles) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      item.username.isEmpty ? item.url : item.username,
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 11,
+                        color: TacticalTheme.textSecondary,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  ],
                 ],
               ),
             ),
             if (isDesktop) ...[
+              if (item.hasPasskey) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: TacticalTheme.emeraldDim,
+                    borderRadius: BorderRadius.circular(3),
+                    border: Border.all(
+                      color: TacticalTheme.emeraldReady,
+                      width: 1,
+                    ),
+                  ),
+                  child: Text(
+                    'PASSKEY',
+                    style: TacticalTheme.monoStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                      color: TacticalTheme.emeraldReady,
+                    ),
+                  ),
+                ),
+              ] else if (item.passkeySupported) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: TacticalTheme.cyanDim,
+                    borderRadius: BorderRadius.circular(3),
+                    border: Border.all(
+                      color: TacticalTheme.cyanTactical,
+                      width: 1,
+                    ),
+                  ),
+                  child: Text(
+                    'PASSKEY READY',
+                    style: TacticalTheme.monoStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                      color: TacticalTheme.cyanTactical,
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(width: 8),
               Text(
                 '[$groupLabel]',
@@ -835,6 +1513,16 @@ class _VaultScreenState extends State<VaultScreen> {
                   color: TacticalTheme.amberPrimary,
                   onPressed: () => _copyPassword(context, item),
                 ),
+                if (item.hasTotp) ...[
+                  const SizedBox(width: 6),
+                  TacticalActionSquare(
+                    key: ValueKey('vault_copy_totp_${item.id}'),
+                    icon: Icons.pin_outlined,
+                    tooltip: 'Copy TOTP code',
+                    color: TacticalTheme.amberBright,
+                    onPressed: () => _copyTotp(context, item),
+                  ),
+                ],
                 if (isDesktop) ...[
                   const SizedBox(width: 6),
                   TacticalActionSquare(
@@ -853,37 +1541,196 @@ class _VaultScreenState extends State<VaultScreen> {
     );
   }
 
+  List<VaultItem> _filterAndSortItems() {
+    final allItems = controller.items;
+    final selectedGroupId = controller.selectedGroupId;
+    final selectedCategory = controller.selectedCategory;
+    final selectedItemCat = controller.selectedItemCategory;
+    final selectedTag = controller.selectedTag;
+    final groups = controller.groups;
+
+    // Exclude archived/trashed unless specifically viewing Archived or Trashed
+    final basePool = switch (selectedCategory) {
+      VaultCategoryFilter.archived =>
+        allItems.where((i) => !i.isTrashed && i.isArchived).toList(),
+      VaultCategoryFilter.trashed =>
+        allItems.where((i) => i.isTrashed).toList(),
+      _ => allItems.where((i) => !i.isTrashed && !i.isArchived).toList(),
+    };
+
+    final isRootGroup =
+        groups.isNotEmpty && selectedGroupId == groups.first.id;
+    final selectedGroupName = selectedGroupId == null
+        ? null
+        : groups
+                .where((g) => g.id == selectedGroupId)
+                .map((g) => g.name)
+                .firstOrNull ??
+            selectedGroupId;
+
+    var filtered = selectedGroupName == null
+        ? basePool
+        : basePool
+            .where(
+              (i) =>
+                  i.groupName == selectedGroupName ||
+                  i.groupName == selectedGroupId ||
+                  (isRootGroup &&
+                      (i.groupName == null || i.groupName!.isEmpty)),
+            )
+            .toList();
+
+    if (selectedItemCat != null) {
+      final target = selectedItemCat.toLowerCase();
+      filtered = filtered
+          .where((i) => i.category.toLowerCase() == target)
+          .toList();
+    }
+
+    if (selectedTag != null) {
+      final target = selectedTag.toLowerCase();
+      filtered = filtered
+          .where((i) => i.tags.any((t) => t.toLowerCase() == target))
+          .toList();
+    }
+
+    filtered = switch (selectedCategory) {
+      VaultCategoryFilter.all ||
+      VaultCategoryFilter.archived ||
+      VaultCategoryFilter.trashed =>
+        filtered,
+      VaultCategoryFilter.favorites =>
+        filtered.where((i) => i.isFavorite).toList(),
+      VaultCategoryFilter.passkeys =>
+        filtered.where((i) => i.hasPasskey).toList(),
+      VaultCategoryFilter.passkeySupported =>
+        filtered.where((i) => i.passkeySupported).toList(),
+      VaultCategoryFilter.totp2fa =>
+        filtered.where((i) => i.hasTotp).toList(),
+      VaultCategoryFilter.auditExcellent => filtered
+          .where(
+            (i) =>
+                !i.isWeak &&
+                !i.isIdentical &&
+                !i.isCompromised &&
+                !i.isBreached &&
+                i.strengthScore >= 75,
+          )
+          .toList(),
+      VaultCategoryFilter.auditCompromised =>
+        filtered.where((i) => i.isCompromised).toList(),
+      VaultCategoryFilter.auditWeak =>
+        filtered.where((i) => i.isWeak).toList(),
+      VaultCategoryFilter.auditIdentical =>
+        filtered.where((i) => i.isIdentical).toList(),
+      VaultCategoryFilter.auditBreached =>
+        filtered.where((i) => i.isBreached).toList(),
+      VaultCategoryFilter.auditTwoFaSupported =>
+        filtered.where((i) => i.twoFaSupported).toList(),
+      VaultCategoryFilter.auditExpired =>
+        filtered.where((i) => i.isExpired).toList(),
+      VaultCategoryFilter.attachments =>
+        filtered.where((i) => i.hasAttachment).toList(),
+    };
+
+    final sorted = List.of(filtered);
+    sorted.sort((a, b) {
+      final cmp = switch (controller.sortField) {
+        VaultSortField.title =>
+          a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+        VaultSortField.username =>
+          a.username.toLowerCase().compareTo(b.username.toLowerCase()),
+        VaultSortField.url =>
+          a.url.toLowerCase().compareTo(b.url.toLowerCase()),
+        VaultSortField.revisionDate =>
+          (b.revisionDate ?? 0).compareTo(a.revisionDate ?? 0),
+      };
+      return controller.sortAscending ? cmp : -cmp;
+    });
+    return sorted;
+  }
+
+  static String _alphaHeaderFor(String title) {
+    final trimmed = title.trim();
+    if (trimmed.isEmpty) return '#';
+    final first = trimmed[0].toUpperCase();
+    if (RegExp(r'[0-9]').hasMatch(first)) return first;
+    if (RegExp(r'[A-Z]').hasMatch(first)) return first;
+    return '#';
+  }
+
+  Widget _buildGroupedListView(
+    BuildContext context,
+    List<VaultItem> items,
+    List<VaultGroup> groups, {
+    required String? activeInspectorId,
+    required bool isDesktop,
+  }) {
+    if (items.isEmpty) {
+      return Center(
+        child: Text(
+          controller.query.isEmpty
+              ? 'No entries yet. Tap Add to create one.'
+              : 'No matches.',
+          style: TacticalTheme.monoStyle(color: TacticalTheme.textMuted),
+        ),
+      );
+    }
+
+    final rows = <Widget>[];
+    String? lastBucket;
+    for (final item in items) {
+      if (controller.sortField == VaultSortField.title) {
+        final bucket = _alphaHeaderFor(item.title);
+        if (bucket != lastBucket) {
+          lastBucket = bucket;
+          rows.add(
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              color: TacticalTheme.bgDeepCarbon,
+              child: Text(
+                bucket,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: TacticalTheme.amberPrimary,
+                ),
+              ),
+            ),
+          );
+        }
+      }
+      rows.add(
+        _buildCredentialRow(
+          context,
+          item,
+          groups,
+          isSelected: isDesktop &&
+              !_creatingNewInInspector &&
+              item.id == activeInspectorId,
+          isDesktop: isDesktop,
+        ),
+      );
+    }
+
+    return ListView(children: rows);
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
-        final allItems = controller.items;
         final selectedGroupId = controller.selectedGroupId;
+        final selectedCategory = controller.selectedCategory;
         final groups = controller.groups;
-
-        final selectedGroupName = selectedGroupId == null
-            ? null
-            : groups
-                    .where((g) => g.id == selectedGroupId)
-                    .map((g) => g.name)
-                    .firstOrNull ??
-                selectedGroupId;
-
-        final items = selectedGroupName == null
-            ? allItems
-            : allItems
-                .where((i) =>
-                    i.groupName == selectedGroupName ||
-                    i.groupName == selectedGroupId)
-                .toList();
+        final items = _filterAndSortItems();
 
         return LayoutBuilder(
           builder: (context, constraints) {
             final isDesktop = constraints.maxWidth >= 840;
             final isWideBar = constraints.maxWidth >= 680;
 
-            // Resolve active entry for desktop inspector
             String? activeInspectorId = _selectedEntryId;
             if (isDesktop && !_creatingNewInInspector) {
               if (activeInspectorId == null ||
@@ -897,6 +1744,7 @@ class _VaultScreenState extends State<VaultScreen> {
               floatingActionButton: isDesktop
                   ? null
                   : FloatingActionButton.extended(
+                      key: const ValueKey('vault_button_add_entry'),
                       backgroundColor: TacticalTheme.amberPrimary,
                       foregroundColor: TacticalTheme.bgDeepCarbon,
                       onPressed: () => _openEntry(context, isDesktop: false),
@@ -918,142 +1766,150 @@ class _VaultScreenState extends State<VaultScreen> {
                           ? Row(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
-                                // Left Pane: Group Tree
+                                // Left Pane: Enpass Sidebar + Group Tree
                                 _buildLeftGroupTree(
                                   context,
                                   groups,
                                   selectedGroupId,
-                                  allItems.length,
+                                  controller.activeItems.length,
                                 ),
 
-                                // Center Pane: Credentials Matrix
+                                // Center Pane: Either Enpass Home Security Dashboard OR Credentials Matrix
                                 Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.stretch,
-                                    children: [
-                                      // Search + Add Bar
-                                      Container(
-                                        padding: const EdgeInsets.all(10),
-                                        decoration: const BoxDecoration(
-                                          color: TacticalTheme.bgPanel,
-                                          border: Border(
-                                            bottom: BorderSide(
-                                              color: TacticalTheme.borderTech,
-                                              width: 1,
-                                            ),
-                                          ),
-                                        ),
-                                        child: Row(
+                                  child: controller.showHomeDashboard
+                                      ? HomeDashboardPane(
+                                          controller: controller,
+                                        )
+                                      : Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.stretch,
                                           children: [
-                                            Expanded(
-                                              child: TextField(
-                                                onChanged: controller.search,
-                                                style: TacticalTheme.monoStyle(
-                                                  fontSize: 13,
-                                                ),
-                                                decoration:
-                                                    const InputDecoration(
-                                                  prefixIcon: Icon(
-                                                    Icons.search,
-                                                    size: 18,
+                                            // Search + Add Bar
+                                            Container(
+                                              padding: const EdgeInsets.all(10),
+                                              decoration: const BoxDecoration(
+                                                color: TacticalTheme.bgPanel,
+                                                border: Border(
+                                                  bottom: BorderSide(
                                                     color: TacticalTheme
-                                                        .amberPrimary,
+                                                        .borderTech,
+                                                    width: 1,
                                                   ),
-                                                  hintText:
-                                                      'Search title, username or URL',
                                                 ),
                                               ),
+                                              child: Row(
+                                                children: [
+                                                  Expanded(
+                                                    child: TextField(
+                                                      key: const ValueKey(
+                                                        'vault_field_search',
+                                                      ),
+                                                      onChanged:
+                                                          controller.search,
+                                                      style: TacticalTheme
+                                                          .monoStyle(
+                                                        fontSize: 13,
+                                                      ),
+                                                      decoration:
+                                                          const InputDecoration(
+                                                        prefixIcon: Icon(
+                                                          Icons.search,
+                                                          size: 18,
+                                                          color: TacticalTheme
+                                                              .amberPrimary,
+                                                        ),
+                                                        hintText:
+                                                            'Search title, username or URL',
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 10),
+                                                  FilledButton.icon(
+                                                    key: const ValueKey(
+                                                      'vault_button_add_entry',
+                                                    ),
+                                                    onPressed: () => _openEntry(
+                                                      context,
+                                                      isDesktop: true,
+                                                    ),
+                                                    icon: const Icon(
+                                                      Icons.add,
+                                                      size: 16,
+                                                    ),
+                                                    label: const Text('Add'),
+                                                  ),
+                                                ],
+                                              ),
                                             ),
-                                            const SizedBox(width: 10),
-                                            FilledButton.icon(
-                                              onPressed: () => _openEntry(
+
+                                            // Enpass `Sort By: Title v` + Column Headers
+                                            Container(
+                                              height: 32,
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 14,
+                                              ),
+                                              decoration: const BoxDecoration(
+                                                color: TacticalTheme.bgSurface,
+                                                border: Border(
+                                                  bottom: BorderSide(
+                                                    color: TacticalTheme
+                                                        .borderTech,
+                                                    width: 1,
+                                                  ),
+                                                ),
+                                              ),
+                                              child: Row(
+                                                children: [
+                                                  InkWell(
+                                                    key: const ValueKey(
+                                                      'vault_button_sort_title',
+                                                    ),
+                                                    onTap: () =>
+                                                        controller.setSort(
+                                                      VaultSortField.title,
+                                                    ),
+                                                    child: Text(
+                                                      'Sort By: Title ${controller.sortAscending ? "▲" : "▼"}',
+                                                      style: TacticalTheme
+                                                          .monoStyle(
+                                                        fontSize: 11,
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                        color: TacticalTheme
+                                                            .textSecondary,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const Spacer(),
+                                                  Text(
+                                                    'Instant Copy Trigger',
+                                                    style:
+                                                        TacticalTheme.monoStyle(
+                                                      fontSize: 11,
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                      color: TacticalTheme
+                                                          .textSecondary,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+
+                                            // Alphabetically Grouped Credentials List
+                                            Expanded(
+                                              child: _buildGroupedListView(
                                                 context,
+                                                items,
+                                                groups,
+                                                activeInspectorId:
+                                                    activeInspectorId,
                                                 isDesktop: true,
                                               ),
-                                              icon: const Icon(
-                                                Icons.add,
-                                                size: 16,
-                                              ),
-                                              label: const Text('Add'),
                                             ),
                                           ],
                                         ),
-                                      ),
-
-                                      // Column Headers
-                                      Container(
-                                        height: 32,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 14,
-                                        ),
-                                        decoration: const BoxDecoration(
-                                          color: TacticalTheme.bgSurface,
-                                          border: Border(
-                                            bottom: BorderSide(
-                                              color: TacticalTheme.borderTech,
-                                              width: 1,
-                                            ),
-                                          ),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            Text(
-                                              'Credentials ▲',
-                                              style: TacticalTheme.monoStyle(
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w700,
-                                                color:
-                                                    TacticalTheme.textSecondary,
-                                              ),
-                                            ),
-                                            const Spacer(),
-                                            Text(
-                                              'Instant Copy Trigger',
-                                              style: TacticalTheme.monoStyle(
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w700,
-                                                color:
-                                                    TacticalTheme.textSecondary,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-
-                                      // Credentials List
-                                      Expanded(
-                                        child: items.isEmpty
-                                            ? Center(
-                                                child: Text(
-                                                  controller.query.isEmpty
-                                                      ? 'No entries yet. Tap Add to create one.'
-                                                      : 'No matches.',
-                                                  style:
-                                                      TacticalTheme.monoStyle(
-                                                    color:
-                                                        TacticalTheme.textMuted,
-                                                  ),
-                                                ),
-                                              )
-                                            : ListView.builder(
-                                                itemCount: items.length,
-                                                itemBuilder: (context, i) {
-                                                  final item = items[i];
-                                                  return _buildCredentialRow(
-                                                    context,
-                                                    item,
-                                                    groups,
-                                                    isSelected: !_creatingNewInInspector &&
-                                                        item.id ==
-                                                            activeInspectorId,
-                                                    isDesktop: true,
-                                                  );
-                                                },
-                                              ),
-                                      ),
-                                    ],
-                                  ),
                                 ),
 
                                 // Right Pane: Cryptographic Entry Inspector
@@ -1100,6 +1956,7 @@ class _VaultScreenState extends State<VaultScreen> {
                                   padding:
                                       const EdgeInsets.fromLTRB(12, 10, 12, 4),
                                   child: TextField(
+                                    key: const ValueKey('vault_field_search'),
                                     onChanged: controller.search,
                                     style: TacticalTheme.monoStyle(fontSize: 13),
                                     decoration: const InputDecoration(
@@ -1111,74 +1968,126 @@ class _VaultScreenState extends State<VaultScreen> {
                                     ),
                                   ),
                                 ),
-                                if (groups.isNotEmpty)
-                                  SingleChildScrollView(
-                                    scrollDirection: Axis.horizontal,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 4,
-                                    ),
-                                    child: Row(
-                                      children: [
+                                SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 4,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      FilterChip(
+                                        key: const ValueKey(
+                                          'mobile_chip_home',
+                                        ),
+                                        label: const Text('Home Audit'),
+                                        selected: controller.showHomeDashboard,
+                                        onSelected: (_) =>
+                                            controller.showHomeDashboard
+                                                ? controller.closeHomeDashboard()
+                                                : controller.openHomeDashboard(),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      FilterChip(
+                                        label: const Text('All'),
+                                        selected: !controller
+                                                .showHomeDashboard &&
+                                            selectedGroupId == null &&
+                                            selectedCategory ==
+                                                VaultCategoryFilter.all,
+                                        onSelected: (_) =>
+                                            controller.selectGroup(null),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      FilterChip(
+                                        label: Text(
+                                          'Passkeys (${controller.passkeyCount})',
+                                        ),
+                                        selected: selectedCategory ==
+                                            VaultCategoryFilter.passkeys,
+                                        onSelected: (_) =>
+                                            controller.selectCategory(
+                                          selectedCategory ==
+                                                  VaultCategoryFilter.passkeys
+                                              ? VaultCategoryFilter.all
+                                              : VaultCategoryFilter.passkeys,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      FilterChip(
+                                        label: Text(
+                                          'Passkey Supported (${controller.passkeySupportedCount})',
+                                        ),
+                                        selected: selectedCategory ==
+                                            VaultCategoryFilter.passkeySupported,
+                                        onSelected: (_) =>
+                                            controller.selectCategory(
+                                          selectedCategory ==
+                                                  VaultCategoryFilter
+                                                      .passkeySupported
+                                              ? VaultCategoryFilter.all
+                                              : VaultCategoryFilter
+                                                  .passkeySupported,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      FilterChip(
+                                        key: const ValueKey(
+                                          'vault_filter_totp',
+                                        ),
+                                        label: Text(
+                                          '2FA (TOTP) (${controller.totpCount})',
+                                        ),
+                                        selected: selectedCategory ==
+                                            VaultCategoryFilter.totp2fa,
+                                        onSelected: (_) =>
+                                            controller.selectCategory(
+                                          selectedCategory ==
+                                                  VaultCategoryFilter.totp2fa
+                                              ? VaultCategoryFilter.all
+                                              : VaultCategoryFilter.totp2fa,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      for (final g in groups) ...[
                                         FilterChip(
-                                          label: const Text('All'),
-                                          selected: selectedGroupId == null,
+                                          label: Text(
+                                            '${g.name} (${g.entryCount})',
+                                          ),
+                                          selected: selectedGroupId == g.id,
                                           onSelected: (_) =>
-                                              controller.selectGroup(null),
+                                              controller.selectGroup(
+                                            selectedGroupId == g.id
+                                                ? null
+                                                : g.id,
+                                          ),
                                         ),
                                         const SizedBox(width: 8),
-                                        for (final g in groups) ...[
-                                          FilterChip(
-                                            label: Text(
-                                              '${g.name} (${g.entryCount})',
-                                            ),
-                                            selected: selectedGroupId == g.id,
-                                            onSelected: (_) =>
-                                                controller.selectGroup(
-                                              selectedGroupId == g.id
-                                                  ? null
-                                                  : g.id,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                        ],
-                                        ActionChip(
-                                          avatar: const Icon(
-                                            Icons.add,
-                                            size: 16,
-                                            color: TacticalTheme.amberPrimary,
-                                          ),
-                                          label: const Text('Group'),
-                                          onPressed: () =>
-                                              _createGroup(context),
-                                        ),
                                       ],
-                                    ),
+                                      ActionChip(
+                                        avatar: const Icon(
+                                          Icons.add,
+                                          size: 16,
+                                          color: TacticalTheme.amberPrimary,
+                                        ),
+                                        label: const Text('Group'),
+                                        onPressed: () =>
+                                            _createGroup(context),
+                                      ),
+                                    ],
                                   ),
+                                ),
                                 Expanded(
-                                  child: items.isEmpty
-                                      ? Center(
-                                          child: Text(
-                                            controller.query.isEmpty
-                                                ? 'No entries yet. Tap Add to create one.'
-                                                : 'No matches.',
-                                            style: TacticalTheme.monoStyle(
-                                              color: TacticalTheme.textMuted,
-                                            ),
-                                          ),
+                                  child: controller.showHomeDashboard
+                                      ? HomeDashboardPane(
+                                          controller: controller,
                                         )
-                                      : ListView.builder(
-                                          itemCount: items.length,
-                                          itemBuilder: (context, i) {
-                                            final item = items[i];
-                                            return _buildCredentialRow(
-                                              context,
-                                              item,
-                                              groups,
-                                              isSelected: false,
-                                              isDesktop: false,
-                                            );
-                                          },
+                                      : _buildGroupedListView(
+                                          context,
+                                          items,
+                                          groups,
+                                          activeInspectorId: null,
+                                          isDesktop: false,
                                         ),
                                 ),
                               ],
@@ -1197,8 +2106,10 @@ class _VaultScreenState extends State<VaultScreen> {
 
 class _GroupTreeTile extends StatelessWidget {
   const _GroupTreeTile({
+    super.key,
     required this.name,
     required this.count,
+    this.showCount = true,
     required this.selected,
     required this.icon,
     required this.onTap,
@@ -1206,6 +2117,7 @@ class _GroupTreeTile extends StatelessWidget {
 
   final String name;
   final int count;
+  final bool showCount;
   final bool selected;
   final IconData icon;
   final VoidCallback onTap;
@@ -1215,7 +2127,7 @@ class _GroupTreeTile extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
         decoration: BoxDecoration(
           color: selected ? TacticalTheme.bgElevated : Colors.transparent,
           border: Border(
@@ -1256,15 +2168,16 @@ class _GroupTreeTile extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            Text(
-              '($count)',
-              style: TacticalTheme.monoStyle(
-                fontSize: 11,
-                color: selected
-                    ? TacticalTheme.amberBright
-                    : TacticalTheme.textMuted,
+            if (showCount)
+              Text(
+                '($count)',
+                style: TacticalTheme.monoStyle(
+                  fontSize: 11,
+                  color: selected
+                      ? TacticalTheme.amberBright
+                      : TacticalTheme.textMuted,
+                ),
               ),
-            ),
           ],
         ),
       ),

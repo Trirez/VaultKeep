@@ -34,4 +34,10 @@ pub enum VaultError {
     IncompatibleVaultRoots,
     #[error("cannot merge vault with itself")]
     SelfMerge,
+    #[error("stale entry revision: entry was modified since it was loaded (expected {expected}, actual {actual})")]
+    StaleRevision { expected: i64, actual: i64 },
+    #[error("weak or out-of-range KDF parameters: {0}")]
+    WeakKdfParameters(&'static str),
+    #[error("current master password is incorrect")]
+    InvalidMasterPassword,
 }

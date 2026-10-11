@@ -8,8 +8,8 @@ use tempfile::tempdir;
 use zeroize::Zeroizing;
 
 use vaultkeep_core::{
-    generate_password, EntryInput, PasswordPolicy, Vault, VaultError, MAX_ATTACHMENT_BYTES,
-    MAX_VAULT_BYTES,
+    generate_password, EntryInput, KdfParams, PasswordPolicy, Vault, VaultError,
+    MAX_ATTACHMENT_BYTES, MAX_VAULT_BYTES,
 };
 
 fn sample_entry(title: &str, user: &str, pw: &str) -> EntryInput {
@@ -23,6 +23,7 @@ fn sample_entry(title: &str, user: &str, pw: &str) -> EntryInput {
         otp: Some(Zeroizing::new(
             "otpauth://totp/Ex:user?secret=JBSWY3DPEHPK3PXP&period=30&digits=6".into(),
         )),
+        last_known_revision_date: None,
     }
 }
 
@@ -36,8 +37,10 @@ fn bit_flipped_ciphertext_fails_authentication() {
     let master = "correct-horse-battery-staple";
 
     let mut v = Vault::create(&path, master).unwrap();
-    v.add(&sample_entry("GitHub", "octocat", "super-secret-token"));
-    v.add(&sample_entry("Bank", "alice", "p@ssw0rd999"));
+    v.add(&sample_entry("GitHub", "octocat", "super-secret-token"))
+        .unwrap();
+    v.add(&sample_entry("Bank", "alice", "p@ssw0rd999"))
+        .unwrap();
     v.save().unwrap();
     drop(v);
 
@@ -87,7 +90,7 @@ fn truncated_envelopes_fail_safely() {
     let master = "correct-horse-battery-staple";
 
     let mut v = Vault::create(&path, master).unwrap();
-    v.add(&sample_entry("Test", "user", "secret"));
+    v.add(&sample_entry("Test", "user", "secret")).unwrap();
     v.save().unwrap();
     drop(v);
 
@@ -128,7 +131,7 @@ fn malformed_magic_and_version_fail_without_downgrade() {
     let master = "correct-horse-battery-staple";
 
     let mut v = Vault::create(&path, master).unwrap();
-    v.add(&sample_entry("Test", "user", "secret"));
+    v.add(&sample_entry("Test", "user", "secret")).unwrap();
     v.save().unwrap();
     drop(v);
 
@@ -197,7 +200,7 @@ fn input_bounds_enforce_file_and_attachment_limits() {
     // 2. Attachment bounds check
     let vault_path = dir.path().join("normal.kdbx");
     let mut v = Vault::create(&vault_path, "master").unwrap();
-    let entry_id = v.add(&sample_entry("Service", "admin", "pass"));
+    let entry_id = v.add(&sample_entry("Service", "admin", "pass")).unwrap();
 
     // Attachment name must not be empty
     let empty_name_res = v.add_attachment(entry_id, "   ", b"payload");
@@ -228,6 +231,7 @@ fn secrets_never_leak_in_debug_and_error_representations() {
         notes: "Confidential Notes".into(),
         group_id: None,
         otp: Some(Zeroizing::new(secret_otp.into())),
+        last_known_revision_date: None,
     };
 
     let input_debug = format!("{input:?}");
@@ -248,10 +252,11 @@ fn secrets_never_leak_in_debug_and_error_representations() {
     let path = dir.path().join("v.kdbx");
     let master_pass = "MASTER_KEY_SECRET_789";
     let mut v = Vault::create(&path, master_pass).unwrap();
-    let id = v.add(&input);
+    let id = v.add(&input).unwrap();
     v.save().unwrap();
 
     let details = v.details(id).unwrap();
+    assert!(details.has_otp);
     let details_debug = format!("{details:?}");
     assert!(
         !details_debug.contains(secret_pw),
@@ -261,7 +266,10 @@ fn secrets_never_leak_in_debug_and_error_representations() {
         !details_debug.contains("SUPERSECRETSEED2FA"),
         "EntryDetails debug leaked OTP secret"
     );
-    assert!(details_debug.contains("[REDACTED]"));
+    assert_eq!(
+        v.otp_uri(id).unwrap().as_deref().map(|s| s.as_str()),
+        Some(secret_otp)
+    );
 
     let token = v.totp(id).unwrap().unwrap();
     let token_debug = format!("{token:?}");
@@ -285,6 +293,59 @@ fn secrets_never_leak_in_debug_and_error_representations() {
 
     let policy_err = VaultError::Policy("length must be between class count and 256");
     assert!(!format!("{policy_err:?}").contains("SECRET"));
+}
+
+// ---------------------------------------------------------------------------
+// 5b. KDF Parameter Range Validation (Argon2id Hardening)
+// ---------------------------------------------------------------------------
+#[test]
+fn kdf_parameter_bounds_reject_weak_or_excessive_configs() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("weak.kdbx");
+
+    // Too few iterations (< 2)
+    let too_few_iters = KdfParams {
+        iterations: 1,
+        ..KdfParams::default()
+    };
+    assert!(matches!(
+        Vault::create_with_kdf(&path, "master", too_few_iters),
+        Err(VaultError::WeakKdfParameters(_))
+    ));
+
+    // Too little memory (< 15 MiB)
+    let too_low_mem = KdfParams {
+        memory_bytes: 1024 * 1024, // 1 MiB
+        ..KdfParams::default()
+    };
+    assert!(matches!(
+        Vault::create_with_kdf(&path, "master", too_low_mem),
+        Err(VaultError::WeakKdfParameters(_))
+    ));
+
+    // Zero parallelism
+    let zero_lanes = KdfParams {
+        parallelism: 0,
+        ..KdfParams::default()
+    };
+    assert!(matches!(
+        Vault::create_with_kdf(&path, "master", zero_lanes),
+        Err(VaultError::WeakKdfParameters(_))
+    ));
+
+    // Excessive memory (> 1024 MiB)
+    let excessive_mem = KdfParams {
+        memory_bytes: 2048 * 1024 * 1024,
+        ..KdfParams::default()
+    };
+    assert!(matches!(
+        Vault::create_with_kdf(&path, "master", excessive_mem),
+        Err(VaultError::WeakKdfParameters(_))
+    ));
+    assert!(
+        !path.exists(),
+        "rejected KDF must never create a vault file"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,35 @@
-import 'dart:typed_data';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'backend.dart';
 import 'src/rust/api/vault.dart' as rust;
 
 class RustBackend implements VaultBackend {
+  static VaultItem _mapItem(rust.EntryItem e) => VaultItem(
+        id: e.id,
+        title: e.title,
+        username: e.username,
+        url: e.url,
+        groupName: e.groupName,
+        hasPasskey: e.hasPasskey,
+        passkeySupported: e.passkeySupported,
+        hasTotp: e.hasTotp,
+        revisionDate: e.revisionDate?.toInt(),
+        category: e.category,
+        tags: List.unmodifiable(e.tags),
+        isFavorite: e.isFavorite,
+        isArchived: e.isArchived,
+        isTrashed: e.isTrashed,
+        hasAttachment: e.hasAttachment,
+        twoFaSupported: e.twoFaSupported,
+        passwordStrength: e.passwordStrength,
+        strengthScore: e.strengthScore,
+        isWeak: e.isWeak,
+        isIdentical: e.isIdentical,
+        isCompromised: e.isCompromised,
+        isBreached: e.isBreached,
+        isExpired: e.isExpired,
+      );
+
   @override
   Future<void> create(String path, String master) =>
       rust.createVault(path: path, master: master);
@@ -18,21 +44,13 @@ class RustBackend implements VaultBackend {
   @override
   Future<List<VaultItem>> list(String query) async {
     final items = await rust.listEntries(query: query);
-    return [
-      for (final e in items)
-        VaultItem(
-          id: e.id,
-          title: e.title,
-          username: e.username,
-          url: e.url,
-          groupName: e.groupName,
-        ),
-    ];
+    return [for (final e in items) _mapItem(e)];
   }
 
   @override
   Future<VaultEntry> get(String id) async {
     final e = await rust.getEntry(id: id);
+    final pk = e.passkey;
     return VaultEntry(
       id: e.id,
       title: e.title,
@@ -41,16 +59,42 @@ class RustBackend implements VaultBackend {
       notes: e.notes,
       groupId: e.groupId,
       groupName: e.groupName,
-      otpUri: e.otpUri,
+      hasOtp: e.hasOtp,
       attachments: [
         for (final a in e.attachments)
           VaultAttachment(name: a.name, size: a.size),
       ],
+      passkey: pk == null
+          ? null
+          : VaultPasskey(
+              rpId: pk.rpId,
+              username: pk.username,
+              credentialId: pk.credentialId,
+              userHandle: pk.userHandle,
+            ),
+      passkeySupported: e.passkeySupported,
+      revisionDate: e.revisionDate?.toInt(),
+      category: e.category,
+      tags: List.unmodifiable(e.tags),
+      isFavorite: e.isFavorite,
+      isArchived: e.isArchived,
+      isTrashed: e.isTrashed,
+      twoFaSupported: e.twoFaSupported,
+      passwordStrength: e.passwordStrength,
+      strengthScore: e.strengthScore,
+      isWeak: e.isWeak,
+      isIdentical: e.isIdentical,
+      isCompromised: e.isCompromised,
+      isBreached: e.isBreached,
+      isExpired: e.isExpired,
     );
   }
 
   @override
   Future<String> revealPassword(String id) => rust.revealPassword(id: id);
+
+  @override
+  Future<String?> revealOtpUri(String id) => rust.revealOtpUri(id: id);
 
   @override
   Future<String> save(String? id, EntryDraft draft) => rust.saveEntry(
@@ -63,7 +107,33 @@ class RustBackend implements VaultBackend {
           notes: draft.notes,
           groupId: draft.groupId,
           otp: draft.otp,
+          lastKnownRevisionDate: draft.lastKnownRevisionDate == null
+              ? null
+              : PlatformInt64Util.from(draft.lastKnownRevisionDate!),
+          category: draft.category,
+          tags: draft.tags,
+          isFavorite: draft.isFavorite,
+          isArchived: draft.isArchived,
+          isTrashed: draft.isTrashed,
         ),
+      );
+
+  @override
+  Future<void> setEntryMetadata(
+    String id, {
+    required String category,
+    required List<String> tags,
+    required bool isFavorite,
+    required bool isArchived,
+    required bool isTrashed,
+  }) =>
+      rust.setEntryMetadata(
+        id: id,
+        category: category,
+        tags: tags,
+        isFavorite: isFavorite,
+        isArchived: isArchived,
+        isTrashed: isTrashed,
       );
 
   @override
@@ -72,6 +142,29 @@ class RustBackend implements VaultBackend {
   @override
   Future<String> generate({int length = 24, bool symbols = true}) =>
       rust.generateNewPassword(length: length, symbols: symbols);
+
+  @override
+  Future<String> generateCustom(PasswordGenConfig config) =>
+      rust.generateCustomPassword(
+        policy: rust.CustomPasswordPolicy(
+          length: config.length,
+          uppercase: config.uppercase,
+          digits: config.digits,
+          symbols: config.symbols,
+          pronounceable: config.pronounceable,
+          allowAmbiguous: config.allowAmbiguous,
+          exactMode: config.exactMode,
+          minUpper: config.minUpper,
+          minDigits: config.minDigits,
+          minSymbols: config.minSymbols,
+          excludeChars: config.excludeChars,
+          includeChars: config.includeChars,
+        ),
+      );
+
+  @override
+  Future<String> createBackup(String backupDir, {int maxBackups = 60}) =>
+      rust.createVaultBackup(backupDir: backupDir, maxBackups: maxBackups);
 
   @override
   Future<List<VaultGroup>> listGroups() async {
@@ -127,15 +220,73 @@ class RustBackend implements VaultBackend {
   @override
   Future<List<VaultItem>> findEntriesForDomain(String domain) async {
     final items = await rust.findEntriesForDomain(domain: domain);
-    return [
-      for (final e in items)
-        VaultItem(
-          id: e.id,
-          title: e.title,
-          username: e.username,
-          url: e.url,
-          groupName: e.groupName,
-        ),
-    ];
+    return [for (final e in items) _mapItem(e)];
   }
+
+  @override
+  Future<VaultPasskey> generatePasskey(
+    String entryId, {
+    String rpId = '',
+    String username = '',
+  }) async {
+    final pk = await rust.generateEntryPasskey(
+      entryId: entryId,
+      rpId: rpId,
+      username: username,
+    );
+    return VaultPasskey(
+      rpId: pk.rpId,
+      username: pk.username,
+      credentialId: pk.credentialId,
+      userHandle: pk.userHandle,
+    );
+  }
+
+  @override
+  Future<VaultPasskeyAssertion> authenticatePasskey(
+    String entryId, {
+    required String platform,
+    String origin = '',
+    bool userVerified = true,
+    String? androidPackageName,
+  }) async {
+    final resp = await rust.authenticateEntryPasskey(
+      entryId: entryId,
+      platform: platform,
+      origin: origin,
+      userVerified: userVerified,
+      androidPackageName: androidPackageName,
+    );
+    return VaultPasskeyAssertion(
+      credentialId: resp.credentialId,
+      rpId: resp.rpId,
+      username: resp.username,
+      userHandle: resp.userHandle,
+      platform: resp.platform,
+      authenticatorAttachment: resp.authenticatorAttachment,
+      authenticatorDataB64url: resp.authenticatorDataB64Url,
+      clientDataJsonB64url: resp.clientDataJsonB64Url,
+      signatureB64url: resp.signatureB64Url,
+      flags: resp.flags,
+      userVerified: resp.userVerified,
+      backupEligible: resp.backupEligible,
+      backupState: resp.backupState,
+      signCount: resp.signCount,
+    );
+  }
+
+  @override
+  Future<void> removePasskey(String entryId) =>
+      rust.removeEntryPasskey(entryId: entryId);
+
+
+  @override
+  Future<void> changeMasterPassword(
+    String currentMaster,
+    String newMaster,
+  ) =>
+      rust.changeMasterPassword(
+        currentMaster: currentMaster,
+        newMaster: newMaster,
+      );
 }

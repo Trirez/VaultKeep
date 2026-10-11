@@ -1,8 +1,18 @@
 #include "flutter_window.h"
 
+#include <flutter/standard_method_codec.h>
+#include <shellapi.h>
+#include <windows.h>
+
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+using WebAuthNGetApiVersionNumberFn = DWORD(WINAPI*)();
+using WebAuthNIsUserVerifyingPlatformAuthenticatorAvailableFn =
+    HRESULT(WINAPI*)(BOOL*);
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,6 +35,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  RegisterPasskeyChannel();
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -39,7 +50,76 @@ bool FlutterWindow::OnCreate() {
   return true;
 }
 
+void FlutterWindow::RegisterPasskeyChannel() {
+  passkey_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(),
+          "com.vaultkeep/passkey_provider",
+          &flutter::StandardMethodCodec::GetInstance());
+
+  passkey_channel_->SetMethodCallHandler(
+      [](const flutter::MethodCall<flutter::EncodableValue>& call,
+         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+             result) {
+        if (call.method_name() == "getPlatformCapabilities") {
+          DWORD api_version = 0;
+          BOOL uvpa_available = FALSE;
+          HMODULE webauthn_dll = LoadLibraryW(L"webauthn.dll");
+          if (webauthn_dll != nullptr) {
+            auto get_ver = reinterpret_cast<WebAuthNGetApiVersionNumberFn>(
+                GetProcAddress(webauthn_dll, "WebAuthNGetApiVersionNumber"));
+            if (get_ver != nullptr) {
+              api_version = get_ver();
+            }
+            auto is_uvpa = reinterpret_cast<
+                WebAuthNIsUserVerifyingPlatformAuthenticatorAvailableFn>(
+                GetProcAddress(
+                    webauthn_dll,
+                    "WebAuthNIsUserVerifyingPlatformAuthenticatorAvailable"));
+            if (is_uvpa != nullptr) {
+              BOOL available = FALSE;
+              if (SUCCEEDED(is_uvpa(&available))) {
+                uvpa_available = available;
+              }
+            }
+            FreeLibrary(webauthn_dll);
+          }
+
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("platform")] =
+              flutter::EncodableValue("windows");
+          map[flutter::EncodableValue("webauthnApiVersion")] =
+              flutter::EncodableValue(static_cast<int32_t>(api_version));
+          map[flutter::EncodableValue("uvSupported")] =
+              flutter::EncodableValue(uvpa_available == TRUE);
+          // Windows 11 22H2+ (API v4+) supports Conditional UI
+          map[flutter::EncodableValue("conditionalGetSupported")] =
+              flutter::EncodableValue(api_version >= 4);
+          // Windows 11 23H2+ (API v6+) supports OS-wide Cross-Device Auth
+          map[flutter::EncodableValue("hybridTransportSupported")] =
+              flutter::EncodableValue(api_version >= 6);
+          // Windows 11 25H2+ (API v7+) supports Native Third-Party Plugin API
+          map[flutter::EncodableValue("pluginApiSupported")] =
+              flutter::EncodableValue(api_version >= 7);
+          result->Success(flutter::EncodableValue(map));
+          return;
+        }
+
+        if (call.method_name() == "openPasskeySettings") {
+          HINSTANCE inst = ShellExecuteW(
+              nullptr, L"open", L"ms-settings:signinoptions", nullptr, nullptr,
+              SW_SHOWNORMAL);
+          bool launched = reinterpret_cast<INT_PTR>(inst) > 32;
+          result->Success(flutter::EncodableValue(launched));
+          return;
+        }
+
+        result->NotImplemented();
+      });
+}
+
 void FlutterWindow::OnDestroy() {
+  passkey_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

@@ -61,7 +61,7 @@ fn run() -> Result<(), VaultError> {
                 password: generate_password(&PasswordPolicy::default())?.into(),
                 ..Default::default()
             };
-            vault.add(&input);
+            vault.add(&input)?;
             vault.save()?;
             println!("added '{}'", input.title);
         }
