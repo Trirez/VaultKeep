@@ -28,6 +28,7 @@ class RustBackend implements VaultBackend {
         isCompromised: e.isCompromised,
         isBreached: e.isBreached,
         isExpired: e.isExpired,
+        email: e.email,
       );
 
   @override
@@ -87,6 +88,21 @@ class RustBackend implements VaultBackend {
       isCompromised: e.isCompromised,
       isBreached: e.isBreached,
       isExpired: e.isExpired,
+      email: e.email,
+      phone: e.phone,
+      securityQuestion: e.securityQuestion,
+      hasSecurityAnswer: e.hasSecurityAnswer,
+      sections: List.unmodifiable(e.sections),
+      customFields: [
+        for (final cf in e.customFields)
+          VaultCustomField(
+            name: cf.name,
+            value: cf.value,
+            fieldType: cf.fieldType,
+            sensitive: cf.sensitive,
+            section: cf.section,
+          ),
+      ],
     );
   }
 
@@ -95,6 +111,14 @@ class RustBackend implements VaultBackend {
 
   @override
   Future<String?> revealOtpUri(String id) => rust.revealOtpUri(id: id);
+
+  @override
+  Future<String?> revealSecurityAnswer(String id) =>
+      rust.revealSecurityAnswer(id: id);
+
+  @override
+  Future<String> revealCustomField(String id, int index) =>
+      rust.revealCustomField(id: id, index: index);
 
   @override
   Future<String> save(String? id, EntryDraft draft) => rust.saveEntry(
@@ -115,6 +139,21 @@ class RustBackend implements VaultBackend {
           isFavorite: draft.isFavorite,
           isArchived: draft.isArchived,
           isTrashed: draft.isTrashed,
+          email: draft.email,
+          phone: draft.phone,
+          securityQuestion: draft.securityQuestion,
+          securityAnswer: draft.securityAnswer,
+          sections: draft.sections,
+          customFields: [
+            for (final cf in draft.customFields)
+              rust.CustomFieldData(
+                name: cf.name,
+                value: cf.value,
+                fieldType: cf.fieldType,
+                sensitive: cf.sensitive,
+                section: cf.section,
+              ),
+          ],
         ),
       );
 
@@ -159,12 +198,51 @@ class RustBackend implements VaultBackend {
           minSymbols: config.minSymbols,
           excludeChars: config.excludeChars,
           includeChars: config.includeChars,
+          separator: config.separator,
         ),
       );
 
   @override
+  Future<PasswordEvaluation> evaluatePassword(String password) async {
+    final res = await rust.evaluatePassword(password: password);
+    return PasswordEvaluation(
+      score: res.score,
+      label: res.label,
+      isCompromised: res.isCompromised,
+    );
+  }
+
+  @override
+  Future<VaultInfo> getVaultInfo() async {
+    final info = await rust.getVaultInfo();
+    return VaultInfo(
+      path: info.path,
+      entryCount: info.entryCount,
+      groupCount: info.groupCount,
+      kdfIterations: info.kdfIterations,
+      kdfMemoryMib: info.kdfMemoryMib,
+      kdfParallelism: info.kdfParallelism,
+    );
+  }
+
+  @override
   Future<String> createBackup(String backupDir, {int maxBackups = 60}) =>
       rust.createVaultBackup(backupDir: backupDir, maxBackups: maxBackups);
+
+  @override
+  Future<List<String>> listBackups(String backupDir) =>
+      rust.listVaultBackups(backupDir: backupDir);
+
+  @override
+  Future<void> restoreBackup(String backupPath, String backupMaster) =>
+      rust.restoreVaultBackup(
+        backupPath: backupPath,
+        backupMaster: backupMaster,
+      );
+
+  @override
+  Future<void> eraseVault(String currentMaster) =>
+      rust.eraseVault(currentMaster: currentMaster);
 
   @override
   Future<List<VaultGroup>> listGroups() async {
@@ -279,7 +357,6 @@ class RustBackend implements VaultBackend {
   Future<void> removePasskey(String entryId) =>
       rust.removeEntryPasskey(entryId: entryId);
 
-
   @override
   Future<void> changeMasterPassword(
     String currentMaster,
@@ -289,4 +366,24 @@ class RustBackend implements VaultBackend {
         currentMaster: currentMaster,
         newMaster: newMaster,
       );
+
+  @override
+  Future<String> duplicateEntry(String id) => rust.duplicateEntry(id: id);
+
+  @override
+  Future<int> exportVault(
+    String destPath,
+    String currentMaster, {
+    String format = 'kdbx',
+  }) =>
+      rust.exportVault(
+        destPath: destPath,
+        currentMaster: currentMaster,
+        format: format,
+      );
+
+  @override
+  Future<int> importCsv(String csvContent) =>
+      rust.importCsvEntries(csvContent: csvContent);
 }
+

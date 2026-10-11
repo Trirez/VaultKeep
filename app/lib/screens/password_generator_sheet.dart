@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -39,8 +39,10 @@ class PasswordGeneratorDialog extends StatefulWidget {
 
 class _PasswordGeneratorDialogState extends State<PasswordGeneratorDialog> {
   String _generated = '';
+  String _backendStrengthLabel = '';
   int _length = 20;
   bool _pronounceable = false;
+  String _separator = '-';
   bool _uppercase = true;
   bool _digits = true;
   bool _symbols = true;
@@ -82,10 +84,19 @@ class _PasswordGeneratorDialogState extends State<PasswordGeneratorDialog> {
           minSymbols: _symbols ? _minSymbols : 0,
           excludeChars: _excludeMode ? _customCharsCtrl.text : '',
           includeChars: !_excludeMode ? _customCharsCtrl.text : '',
+          separator: _separator,
         ),
       );
+      var evalLabel = '';
+      try {
+        final eval = await widget.controller.evaluatePassword(pw);
+        evalLabel = eval.label;
+      } catch (_) {}
       if (!mounted) return;
-      setState(() => _generated = pw);
+      setState(() {
+        _generated = pw;
+        _backendStrengthLabel = evalLabel;
+      });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -95,6 +106,7 @@ class _PasswordGeneratorDialogState extends State<PasswordGeneratorDialog> {
   }
 
   String _strengthLabel() {
+    if (_backendStrengthLabel.isNotEmpty) return _backendStrengthLabel;
     if (_generated.length >= 16 && (_uppercase || _digits || _symbols)) {
       return 'Excellent';
     }
@@ -106,9 +118,24 @@ class _PasswordGeneratorDialogState extends State<PasswordGeneratorDialog> {
   Color _strengthColor() {
     final label = _strengthLabel();
     if (label == 'Excellent') return TacticalTheme.emeraldReady;
-    if (label == 'Good') return TacticalTheme.cyanTactical;
-    if (label == 'Moderate') return TacticalTheme.amberPrimary;
+    if (label == 'Good' || label == 'Strong') return TacticalTheme.cyanTactical;
+    if (label == 'Moderate' || label == 'Average') {
+      return TacticalTheme.amberPrimary;
+    }
     return TacticalTheme.crimsonDanger;
+  }
+
+
+  Widget _buildOptionCard({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: TacticalTheme.bgSurface,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: TacticalTheme.borderTech, width: 1),
+      ),
+      child: child,
+    );
   }
 
   @override
@@ -119,7 +146,7 @@ class _PasswordGeneratorDialogState extends State<PasswordGeneratorDialog> {
     return Dialog(
       key: const ValueKey('enpass_password_generator_dialog'),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 460, maxHeight: 720),
+        constraints: const BoxConstraints(maxWidth: 460, maxHeight: 740),
         child: Padding(
           padding: const EdgeInsets.all(18),
           child: SingleChildScrollView(
@@ -130,13 +157,13 @@ class _PasswordGeneratorDialogState extends State<PasswordGeneratorDialog> {
                 // Header
                 Row(
                   children: [
-                    const Icon(
+                    Icon(
                       Icons.password,
                       color: TacticalTheme.amberPrimary,
                       size: 20,
                     ),
                     const SizedBox(width: 8),
-                    const Expanded(
+                    Expanded(
                       child: Text(
                         'Password Generator',
                         style: TextStyle(
@@ -155,14 +182,14 @@ class _PasswordGeneratorDialogState extends State<PasswordGeneratorDialog> {
                 ),
                 const SizedBox(height: 12),
 
-                // Generated Password Preview Box
+                // Generated Password Preview Box (`Enpass_5dPDQrZflh.png`)
                 Container(
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
                     color: TacticalTheme.bgDeepCarbon,
-                    borderRadius: BorderRadius.circular(6),
+                    borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: TacticalTheme.borderTech,
+                      color: strengthColor,
                       width: 1.5,
                     ),
                   ),
@@ -182,145 +209,228 @@ class _PasswordGeneratorDialogState extends State<PasswordGeneratorDialog> {
                             color: TacticalTheme.textMuted,
                           ),
                         ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        alignment: WrapAlignment.spaceBetween,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        spacing: 8,
-                        runSpacing: 8,
+                      const SizedBox(height: 14),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 3,
-                            ),
-                            decoration: BoxDecoration(
-                              color: TacticalTheme.bgSurface,
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                color: strengthColor,
-                                width: 1,
-                              ),
-                            ),
-                            child: Text(
-                              strengthLabel,
-                              style: TacticalTheme.monoStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                color: strengthColor,
-                              ),
+                          Text(
+                            strengthLabel,
+                            style: TacticalTheme.monoStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: strengthColor,
                             ),
                           ),
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              TacticalActionSquare(
-                                key: const ValueKey('pwgen_button_regenerate'),
-                                icon: Icons.refresh,
-                                tooltip: 'Regenerate password',
-                                color: TacticalTheme.amberPrimary,
-                                onPressed: _regenerate,
-                              ),
-                              const SizedBox(width: 8),
-                              TacticalActionSquare(
-                                key: const ValueKey('pwgen_button_copy'),
-                                icon: Icons.copy,
-                                tooltip: 'Copy password',
-                                color: TacticalTheme.cyanTactical,
-                                onPressed: () {
-                                  if (_generated.isEmpty) return;
-                                  ClipboardGuard.copySecret(_generated);
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'Generated password copied. Clears in 15 seconds.',
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
+                          Text(
+                            'Length: $_length',
+                            style: TacticalTheme.monoStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: TacticalTheme.textSecondary,
+                            ),
                           ),
                         ],
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 10),
 
-                // Length Slider
+                // Regenerate + Copy / Fill Bar directly under Preview Banner (`Enpass_5dPDQrZflh.png`)
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text(
-                      'Length',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: TacticalTheme.textPrimary,
+                    TacticalActionSquare(
+                      key: const ValueKey('pwgen_button_regenerate'),
+                      icon: Icons.refresh,
+                      tooltip: 'Regenerate password',
+                      color: TacticalTheme.amberPrimary,
+                      onPressed: _regenerate,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        key: const ValueKey('pwgen_button_copy'),
+                        icon: const Icon(Icons.copy, size: 15),
+                        label: const Text('Copy'),
+                        onPressed: () {
+                          if (_generated.isEmpty) return;
+                          ClipboardGuard.copySecret(_generated);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Generated password copied. Clears in 15 seconds.',
+                              ),
+                            ),
+                          );
+                        },
                       ),
                     ),
-                    Text(
-                      '$_length',
-                      style: TacticalTheme.monoStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: TacticalTheme.amberBright,
+                    if (widget.onUsePassword != null) ...[
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          key: const ValueKey('pwgen_button_fill'),
+                          icon: const Icon(Icons.check, size: 16),
+                          label: const Text('Fill Password'),
+                          onPressed: () {
+                            widget.onUsePassword?.call(_generated);
+                            Navigator.of(context).pop(_generated);
+                          },
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
-                Slider(
-                  key: const ValueKey('pwgen_slider_length'),
-                  value: _length.toDouble(),
-                  min: 8,
-                  max: 64,
-                  divisions: 56,
-                  activeColor: TacticalTheme.amberPrimary,
-                  onChanged: (v) {
-                    setState(() => _length = v.round());
-                    unawaited(_regenerate());
-                  },
-                ),
+                const SizedBox(height: 12),
 
-                // Pronounceable / Uppercase / Digits / Symbols switches
-                _ToggleRow(
-                  key: const ValueKey('pwgen_switch_pronounceable'),
-                  label: 'Pronounceable',
-                  value: _pronounceable,
-                  onChanged: (v) {
-                    setState(() => _pronounceable = v);
-                    unawaited(_regenerate());
-                  },
+                // Box 1: Length Slider (`Enpass_5dPDQrZflh.png`)
+                _buildOptionCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Length',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: TacticalTheme.textPrimary,
+                            ),
+                          ),
+                          Text(
+                            '$_length',
+                            style: TacticalTheme.monoStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                              color: TacticalTheme.amberBright,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Slider(
+                        key: const ValueKey('pwgen_slider_length'),
+                        value: _length.toDouble(),
+                        min: 8,
+                        max: 64,
+                        divisions: 56,
+                        activeColor: TacticalTheme.amberPrimary,
+                        onChanged: (v) {
+                          setState(() => _length = v.round());
+                          unawaited(_regenerate());
+                        },
+                      ),
+                    ],
+                  ),
                 ),
-                _ToggleRow(
-                  key: const ValueKey('pwgen_switch_uppercase'),
-                  label: 'Uppercase',
-                  value: _uppercase,
-                  onChanged: (v) {
-                    setState(() => _uppercase = v);
-                    unawaited(_regenerate());
-                  },
+                const SizedBox(height: 8),
+
+                // Box 2: Pronounceable Switch + Separator (`Enpass_5dPDQrZflh.png`)
+                _buildOptionCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _ToggleRow(
+                        key: const ValueKey('pwgen_switch_pronounceable'),
+                        label: 'Pronounceable',
+                        value: _pronounceable,
+                        onChanged: (v) {
+                          setState(() => _pronounceable = v);
+                          unawaited(_regenerate());
+                        },
+                      ),
+                      if (_pronounceable) ...[
+                        Divider(
+                          height: 10,
+                          color: TacticalTheme.borderSubtle,
+                        ),
+                        Wrap(
+                          alignment: WrapAlignment.spaceBetween,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            Text(
+                              'Separator',
+                              style: TacticalTheme.monoStyle(
+                                fontSize: 11,
+                                color: TacticalTheme.textSecondary,
+                              ),
+                            ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                for (final sep in const [
+                                  ('-', 'Hyphen (-)'),
+                                  ('.', 'Period (.)'),
+                                  ('_', 'Underscore (_)'),
+                                  (' ', 'Space'),
+                                ])
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 4),
+                                    child: ChoiceChip(
+                                      key: ValueKey('pwgen_sep_${sep.$1}'),
+                                      label: Text(
+                                        sep.$1 == ' ' ? 'Space' : sep.$1,
+                                        style: const TextStyle(fontSize: 11),
+                                      ),
+                                      tooltip: sep.$2,
+                                      selected: _separator == sep.$1,
+                                      onSelected: (_) {
+                                        setState(() => _separator = sep.$1);
+                                        unawaited(_regenerate());
+                                      },
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
-                _ToggleRow(
-                  key: const ValueKey('pwgen_switch_digits'),
-                  label: 'Digits',
-                  value: _digits,
-                  onChanged: (v) {
-                    setState(() => _digits = v);
-                    unawaited(_regenerate());
-                  },
+                const SizedBox(height: 8),
+
+
+                // Box 3: Uppercase / Digits / Symbols (`Enpass_5dPDQrZflh.png`)
+                _buildOptionCard(
+                  child: Column(
+                    children: [
+                      _ToggleRow(
+                        key: const ValueKey('pwgen_switch_uppercase'),
+                        label: 'Uppercase',
+                        value: _uppercase,
+                        onChanged: (v) {
+                          setState(() => _uppercase = v);
+                          unawaited(_regenerate());
+                        },
+                      ),
+                      Divider(height: 8, color: TacticalTheme.borderSubtle),
+                      _ToggleRow(
+                        key: const ValueKey('pwgen_switch_digits'),
+                        label: 'Digits',
+                        value: _digits,
+                        onChanged: (v) {
+                          setState(() => _digits = v);
+                          unawaited(_regenerate());
+                        },
+                      ),
+                      Divider(height: 8, color: TacticalTheme.borderSubtle),
+                      _ToggleRow(
+                        key: const ValueKey('pwgen_switch_symbols'),
+                        label: 'Symbols',
+                        value: _symbols,
+                        onChanged: (v) {
+                          setState(() => _symbols = v);
+                          unawaited(_regenerate());
+                        },
+                      ),
+                    ],
+                  ),
                 ),
-                _ToggleRow(
-                  key: const ValueKey('pwgen_switch_symbols'),
-                  label: 'Symbols',
-                  value: _symbols,
-                  onChanged: (v) {
-                    setState(() => _symbols = v);
-                    unawaited(_regenerate());
-                  },
-                ),
-                const Divider(height: 20),
+                const SizedBox(height: 10),
 
                 // More Options Header
                 InkWell(
@@ -354,154 +464,137 @@ class _PasswordGeneratorDialogState extends State<PasswordGeneratorDialog> {
 
                 if (_moreOptionsExpanded) ...[
                   const SizedBox(height: 8),
-                  // Using: Minimum | Exactly
-                  Wrap(
-                    alignment: WrapAlignment.spaceBetween,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    spacing: 8,
-                    runSpacing: 6,
-                    children: [
-                      Text(
-                        'Using',
-                        style: TacticalTheme.monoStyle(
-                          fontSize: 12,
-                          color: TacticalTheme.textSecondary,
+                  // Box 4: Using: Minimum | Exactly + Count Sliders (`Enpass_5dPDQrZflh.png`)
+                  _buildOptionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Wrap(
+                          alignment: WrapAlignment.spaceBetween,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 8,
+                          runSpacing: 6,
+                          children: [
+                            Text(
+                              'Using',
+                              style: TacticalTheme.monoStyle(
+                                fontSize: 12,
+                                color: TacticalTheme.textSecondary,
+                              ),
+                            ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                ChoiceChip(
+                                  label: const Text('Minimum'),
+                                  selected: !_exactMode,
+                                  onSelected: (_) {
+                                    setState(() => _exactMode = false);
+                                    unawaited(_regenerate());
+                                  },
+                                ),
+                                const SizedBox(width: 6),
+                                ChoiceChip(
+                                  label: const Text('Exactly'),
+                                  selected: _exactMode,
+                                  onSelected: (_) {
+                                    setState(() => _exactMode = true);
+                                    unawaited(_regenerate());
+                                  },
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                      ),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          ChoiceChip(
-                            label: const Text('Minimum'),
-                            selected: !_exactMode,
-                            onSelected: (_) {
-                              setState(() => _exactMode = false);
+                        const SizedBox(height: 6),
+                        if (_uppercase)
+                          _CountSliderRow(
+                            label: 'Uppercase',
+                            value: _minUpper,
+                            onChanged: (v) {
+                              setState(() => _minUpper = v);
                               unawaited(_regenerate());
                             },
                           ),
-                          const SizedBox(width: 6),
-                          ChoiceChip(
-                            label: const Text('Exactly'),
-                            selected: _exactMode,
-                            onSelected: (_) {
-                              setState(() => _exactMode = true);
+                        if (_digits)
+                          _CountSliderRow(
+                            label: 'Digits',
+                            value: _minDigits,
+                            onChanged: (v) {
+                              setState(() => _minDigits = v);
                               unawaited(_regenerate());
                             },
                           ),
-                        ],
-                      ),
-                    ],
+                        if (_symbols)
+                          _CountSliderRow(
+                            label: 'Symbols',
+                            value: _minSymbols,
+                            onChanged: (v) {
+                              setState(() => _minSymbols = v);
+                              unawaited(_regenerate());
+                            },
+                          ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 8),
-                  if (_uppercase)
-                    _CountSliderRow(
-                      label: 'Uppercase',
-                      value: _minUpper,
+                  // Box 5: Exclude | Include custom characters (`Enpass_5dPDQrZflh.png`)
+                  _buildOptionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            ChoiceChip(
+                              label: const Text('Exclude'),
+                              selected: _excludeMode,
+                              onSelected: (_) {
+                                setState(() => _excludeMode = true);
+                                unawaited(_regenerate());
+                              },
+                            ),
+                            const SizedBox(width: 8),
+                            ChoiceChip(
+                              label: const Text('Include'),
+                              selected: !_excludeMode,
+                              onSelected: (_) {
+                                setState(() => _excludeMode = false);
+                                unawaited(_regenerate());
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: _customCharsCtrl,
+                          enableSuggestions: false,
+                          autocorrect: false,
+                          enableIMEPersonalizedLearning: false,
+                          style: TacticalTheme.monoStyle(fontSize: 12),
+                          decoration: InputDecoration(
+                            labelText: _excludeMode
+                                ? 'Characters to exclude (e.g. {}[]()/\\\')'
+                                : 'Additional characters to include',
+                          ),
+                          onChanged: (_) => unawaited(_regenerate()),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  // Box 6: Ambiguous Characters (`Enpass_5dPDQrZflh.png`)
+                  _buildOptionCard(
+                    child: _ToggleRow(
+                      key: const ValueKey('pwgen_switch_ambiguous'),
+                      label: 'Ambiguous Characters',
+                      value: _allowAmbiguous,
                       onChanged: (v) {
-                        setState(() => _minUpper = v);
+                        setState(() => _allowAmbiguous = v);
                         unawaited(_regenerate());
                       },
                     ),
-                  if (_digits)
-                    _CountSliderRow(
-                      label: 'Digits',
-                      value: _minDigits,
-                      onChanged: (v) {
-                        setState(() => _minDigits = v);
-                        unawaited(_regenerate());
-                      },
-                    ),
-                  if (_symbols)
-                    _CountSliderRow(
-                      label: 'Symbols',
-                      value: _minSymbols,
-                      onChanged: (v) {
-                        setState(() => _minSymbols = v);
-                        unawaited(_regenerate());
-                      },
-                    ),
-                  const SizedBox(height: 8),
-                  // Exclude / Include custom characters
-                  Row(
-                    children: [
-                      ChoiceChip(
-                        label: const Text('Exclude'),
-                        selected: _excludeMode,
-                        onSelected: (_) {
-                          setState(() => _excludeMode = true);
-                          unawaited(_regenerate());
-                        },
-                      ),
-                      const SizedBox(width: 8),
-                      ChoiceChip(
-                        label: const Text('Include'),
-                        selected: !_excludeMode,
-                        onSelected: (_) {
-                          setState(() => _excludeMode = false);
-                          unawaited(_regenerate());
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _customCharsCtrl,
-                    enableSuggestions: false,
-                    autocorrect: false,
-                    enableIMEPersonalizedLearning: false,
-                    style: TacticalTheme.monoStyle(fontSize: 12),
-                    decoration: InputDecoration(
-                      labelText: _excludeMode
-                          ? 'Characters to exclude (e.g. {}[]()/\\\')'
-                          : 'Additional characters to include',
-                    ),
-                    onChanged: (_) => unawaited(_regenerate()),
-                  ),
-                  const SizedBox(height: 8),
-                  _ToggleRow(
-                    key: const ValueKey('pwgen_switch_ambiguous'),
-                    label: 'Ambiguous Characters',
-                    value: _allowAmbiguous,
-                    onChanged: (v) {
-                      setState(() => _allowAmbiguous = v);
-                      unawaited(_regenerate());
-                    },
                   ),
                 ],
-
-                const SizedBox(height: 14),
-                Wrap(
-                  alignment: WrapAlignment.end,
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.copy, size: 15),
-                      label: const Text('Copy'),
-                      onPressed: () {
-                        if (_generated.isEmpty) return;
-                        ClipboardGuard.copySecret(_generated);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'Password copied. Clears in 15 seconds.',
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    if (widget.onUsePassword != null)
-                      FilledButton.icon(
-                        key: const ValueKey('pwgen_button_fill'),
-                        icon: const Icon(Icons.check, size: 16),
-                        label: const Text('Fill Password'),
-                        onPressed: () {
-                          widget.onUsePassword?.call(_generated);
-                          Navigator.of(context).pop(_generated);
-                        },
-                      ),
-                  ],
-                ),
               ],
             ),
           ),
@@ -532,7 +625,7 @@ class _ToggleRow extends StatelessWidget {
         children: [
           Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
               color: TacticalTheme.textPrimary,
             ),

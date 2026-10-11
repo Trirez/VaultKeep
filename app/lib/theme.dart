@@ -1,55 +1,150 @@
 import 'package:flutter/material.dart';
 
 /// Tactical Carbon & Amber Hardware-Security Design System for VaultKeep.
+/// Supports Dark, Light, and Follow System (OS brightness + system accent color).
 class TacticalTheme {
   TacticalTheme._();
 
+  /// Whether Light Mode is currently active.
+  static bool isLight = false;
+
+  /// Optional OS system accent color active when "Follow System" is selected.
+  static Color? systemAccent;
+
+  static void configure({
+    required bool light,
+    Color? accent,
+  }) {
+    isLight = light;
+    systemAccent = accent;
+  }
+
   // Core Surfaces
-  static const Color bgDeepCarbon = Color(0xFF090A0F);
-  static const Color bgPanel = Color(0xFF10121A);
-  static const Color bgSurface = Color(0xFF161924);
-  static const Color bgElevated = Color(0xFF1C202E);
-  static const Color bgHover = Color(0xFF222738);
+  static Color get bgDeepCarbon =>
+      isLight ? const Color(0xFFF1F5F9) : const Color(0xFF090A0F);
+  static Color get bgPanel =>
+      isLight ? const Color(0xFFFFFFFF) : const Color(0xFF10121A);
+  static Color get bgSurface =>
+      isLight ? const Color(0xFFF8FAFC) : const Color(0xFF161924);
+  static Color get bgElevated =>
+      isLight ? const Color(0xFFE2E8F0) : const Color(0xFF1C202E);
+  static Color get bgHover =>
+      isLight ? const Color(0xFFCBD5E1) : const Color(0xFF222738);
 
   // Borders & Dividers
-  static const Color borderSubtle = Color(0xFF232838);
-  static const Color borderTech = Color(0xFF2E354A);
-  static const Color borderFocus = Color(0xFFF59E0B);
+  static Color get borderSubtle =>
+      isLight ? const Color(0xFFE2E8F0) : const Color(0xFF232838);
+  static Color get borderTech =>
+      isLight ? const Color(0xFFCBD5E1) : const Color(0xFF2E354A);
+  static Color get borderFocus => amberPrimary;
 
   // Tactical Accents
-  static const Color amberPrimary = Color(0xFFF59E0B);
-  static const Color amberBright = Color(0xFFFBBF24);
-  static const Color amberDim = Color(0xFF452B06);
-  static const Color cyanTactical = Color(0xFF06B6D4);
-  static const Color cyanDim = Color(0xFF0B2E38);
-  static const Color emeraldReady = Color(0xFF10B981);
-  static const Color emeraldDim = Color(0xFF063225);
-  static const Color crimsonDanger = Color(0xFFEF4444);
-  static const Color crimsonDim = Color(0xFF2D1215);
-  static const Color crimsonLight = Color(0xFFFCA5A5);
-  static const Color shadowColor = Color(0x66000000);
+  static Color get amberPrimary {
+    if (systemAccent != null) return systemAccent!;
+    return isLight ? const Color(0xFFD97706) : const Color(0xFFF59E0B);
+  }
+
+  static Color get amberBright {
+    if (systemAccent != null) {
+      final hsl = HSLColor.fromColor(systemAccent!);
+      return isLight
+          ? hsl.withLightness((hsl.lightness * 0.72).clamp(0.18, 0.45)).toColor()
+          : hsl.withLightness((hsl.lightness * 1.18).clamp(0.55, 0.82)).toColor();
+    }
+    return isLight ? const Color(0xFFB45309) : const Color(0xFFFBBF24);
+  }
+
+  static Color get amberDim {
+    if (systemAccent != null) {
+      return isLight
+          ? systemAccent!.withValues(alpha: 0.16)
+          : systemAccent!.withValues(alpha: 0.24);
+    }
+    return isLight ? const Color(0xFFFEF3C7) : const Color(0xFF452B06);
+  }
+
+  static Color get cyanTactical =>
+      isLight ? const Color(0xFF0284C7) : const Color(0xFF06B6D4);
+  static Color get cyanDim =>
+      isLight ? const Color(0xFFE0F2FE) : const Color(0xFF0B2E38);
+  static Color get emeraldReady =>
+      isLight ? const Color(0xFF059669) : const Color(0xFF10B981);
+  static Color get emeraldDim =>
+      isLight ? const Color(0xFFD1FAE5) : const Color(0xFF063225);
+  static Color get crimsonDanger =>
+      isLight ? const Color(0xFFDC2626) : const Color(0xFFEF4444);
+  static Color get crimsonDim =>
+      isLight ? const Color(0xFFFEE2E2) : const Color(0xFF2D1215);
+  static Color get crimsonLight =>
+      isLight ? const Color(0xFFB91C1C) : const Color(0xFFFCA5A5);
+  static Color get shadowColor =>
+      isLight ? const Color(0x220F172A) : const Color(0x66000000);
 
   // Domain Avatar Brand Accents
-  static const Color brandGithub = Color(0xFFF3F4F6);
+  static Color get brandGithub =>
+      isLight ? const Color(0xFF1E293B) : const Color(0xFFF3F4F6);
   static const Color brandAws = Color(0xFFFF9900);
   static const Color brandGoogle = Color(0xFF38BDF8);
   static const Color brandProton = Color(0xFFA855F7);
   static const Color brandFinance = Color(0xFF10B981);
   static const Color brandCloudflare = Color(0xFFF97316);
 
+  // Onboarding Split-Screen & Activation Modal Semantic Tokens
+  static const Color onboardingHeroBlue = Color(0xFF0A439C);
+  static const Color onboardingEmblemFill = Color(0xFF174EA6);
+  static const Color onboardingEmblemBorder = Color(0xFF2B63B8);
+  static const Color onboardingHeroSubtext = Color(0xFFB8CFF2);
+  static const Color onboardingRightPanelBg = Color(0xFFFAFAFA);
+  static const Color onboardingCardWhite = Color(0xFFFFFFFF);
+  static const Color onboardingCardBorder = Color(0xFFE5E7EB);
+  static const Color onboardingSelectedBlue = Color(0xFF1565C0);
+  static const Color onboardingButtonBlue = Color(0xFF3B6CB7);
+  static const Color onboardingTextDark = Color(0xFF111827);
+  static const Color onboardingTextMuted = Color(0xFF6B7280);
+  static const Color onboardingPersonalBg = Color(0xFFBEF2B9);
+  static const Color onboardingPersonalFg = Color(0xFF15803D);
+  static const Color onboardingBusinessBg = Color(0xFFE6CFF7);
+  static const Color onboardingBusinessFg = Color(0xFF7E22CE);
+  static const Color onboardingSafeTeal = Color(0xFF4CA6B8);
+  static const Color onboardingSafeDark = Color(0xFF2B6777);
+  static const Color onboardingBubblePink = Color(0xFFFF4D8D);
+  static const Color onboardingShieldGold = Color(0xFFFACC15);
+  static const Color onboardingKeyGreen = Color(0xFF2AD1A3);
+  static const Color onboardingCardIndigo = Color(0xFF6979B8);
+  static const Color onboardingFolderYellow = Color(0xFFF7B500);
+  static const Color onboardingPadlockGrey = Color(0xFF94A3B8);
+  static const Color onboardingEnvelopeBack = Color(0xFFDCEBFA);
+  static const Color onboardingEnvelopeFront = Color(0xFFEAF3FC);
+  static const Color onboardingEnvelopeCard = Color(0xFF1E56C5);
+  static const Color providerOneDrive = Color(0xFF0078D4);
+  static const Color providerGoogleBlue = Color(0xFF4285F4);
+  static const Color providerGoogleGreen = Color(0xFF34A853);
+  static const Color providerGoogleYellow = Color(0xFFFBBC05);
+  static const Color providerGoogleRed = Color(0xFFEA4335);
+  static const Color providerICloud = Color(0xFF0A84FF);
+  static const Color providerDropbox = Color(0xFF0061FF);
+  static const Color providerBox = Color(0xFF0061D5);
+
   // Typography Colors
-  static const Color textPrimary = Color(0xFFF3F4F6);
-  static const Color textSecondary = Color(0xFF9CA3AF);
-  static const Color textMuted = Color(0xFF6B7280);
+  static Color get textPrimary =>
+      isLight ? const Color(0xFF0F172A) : const Color(0xFFF3F4F6);
+  static Color get textSecondary =>
+      isLight ? const Color(0xFF475569) : const Color(0xFF9CA3AF);
+  static Color get textMuted =>
+      isLight ? const Color(0xFF64748B) : const Color(0xFF6B7280);
 
   // Monospace Font Family
   static const String monoFont = 'Consolas';
-  static const List<String> monoFallback = ['JetBrains Mono', 'Courier New', 'monospace'];
+  static const List<String> monoFallback = [
+    'JetBrains Mono',
+    'Courier New',
+    'monospace',
+  ];
 
   static TextStyle monoStyle({
     double fontSize = 13,
     FontWeight fontWeight = FontWeight.normal,
-    Color color = textPrimary,
+    Color? color,
     double? letterSpacing,
   }) {
     return TextStyle(
@@ -57,37 +152,56 @@ class TacticalTheme {
       fontFamilyFallback: monoFallback,
       fontSize: fontSize,
       fontWeight: fontWeight,
-      color: color,
+      color: color ?? textPrimary,
       letterSpacing: letterSpacing,
     );
   }
 
-  static ThemeData buildTheme() {
-    const colorScheme = ColorScheme.dark(
-      surface: bgPanel,
-      onSurface: textPrimary,
-      primary: amberPrimary,
-      onPrimary: bgDeepCarbon,
-      primaryContainer: amberDim,
-      onPrimaryContainer: amberBright,
-      secondary: cyanTactical,
-      onSecondary: bgDeepCarbon,
-      secondaryContainer: cyanDim,
-      onSecondaryContainer: cyanTactical,
-      error: crimsonDanger,
-      onError: Colors.white,
-      outline: borderTech,
-      outlineVariant: borderSubtle,
-    );
+  static ThemeData buildTheme({bool? light}) {
+    final useLight = light ?? isLight;
+    final brightness = useLight ? Brightness.light : Brightness.dark;
+    final colorScheme = useLight
+        ? ColorScheme.light(
+            surface: bgPanel,
+            onSurface: textPrimary,
+            primary: amberPrimary,
+            onPrimary: bgDeepCarbon,
+            primaryContainer: amberDim,
+            onPrimaryContainer: amberBright,
+            secondary: cyanTactical,
+            onSecondary: Colors.white,
+            secondaryContainer: cyanDim,
+            onSecondaryContainer: cyanTactical,
+            error: crimsonDanger,
+            onError: Colors.white,
+            outline: borderTech,
+            outlineVariant: borderSubtle,
+          )
+        : ColorScheme.dark(
+            surface: bgPanel,
+            onSurface: textPrimary,
+            primary: amberPrimary,
+            onPrimary: bgDeepCarbon,
+            primaryContainer: amberDim,
+            onPrimaryContainer: amberBright,
+            secondary: cyanTactical,
+            onSecondary: bgDeepCarbon,
+            secondaryContainer: cyanDim,
+            onSecondaryContainer: cyanTactical,
+            error: crimsonDanger,
+            onError: Colors.white,
+            outline: borderTech,
+            outlineVariant: borderSubtle,
+          );
 
     return ThemeData(
       useMaterial3: true,
-      brightness: Brightness.dark,
+      brightness: brightness,
       colorScheme: colorScheme,
       scaffoldBackgroundColor: bgDeepCarbon,
       canvasColor: bgPanel,
       dividerColor: borderSubtle,
-      appBarTheme: const AppBarTheme(
+      appBarTheme: AppBarTheme(
         backgroundColor: bgPanel,
         foregroundColor: textPrimary,
         elevation: 0,
@@ -100,7 +214,7 @@ class TacticalTheme {
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(4),
-          side: const BorderSide(color: borderTech, width: 1),
+          side: BorderSide(color: borderTech, width: 1),
         ),
       ),
       dialogTheme: DialogThemeData(
@@ -108,14 +222,14 @@ class TacticalTheme {
         surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(6),
-          side: const BorderSide(color: borderTech, width: 1.5),
+          side: BorderSide(color: borderTech, width: 1.5),
         ),
       ),
-      bottomSheetTheme: const BottomSheetThemeData(
+      bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: bgPanel,
         surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
           side: BorderSide(color: borderTech, width: 1),
         ),
       ),
@@ -123,29 +237,30 @@ class TacticalTheme {
         filled: true,
         fillColor: bgDeepCarbon,
         isDense: true,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        labelStyle: const TextStyle(color: textSecondary, fontSize: 13),
-        hintStyle: const TextStyle(color: textMuted, fontSize: 13),
-        helperStyle: const TextStyle(color: textMuted, fontSize: 11),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        labelStyle: TextStyle(color: textSecondary, fontSize: 13),
+        hintStyle: TextStyle(color: textMuted, fontSize: 13),
+        helperStyle: TextStyle(color: textMuted, fontSize: 11),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(4),
-          borderSide: const BorderSide(color: borderTech, width: 1),
+          borderSide: BorderSide(color: borderTech, width: 1),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(4),
-          borderSide: const BorderSide(color: amberPrimary, width: 1.5),
+          borderSide: BorderSide(color: amberPrimary, width: 1.5),
         ),
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(4),
-          borderSide: const BorderSide(color: crimsonDanger, width: 1),
+          borderSide: BorderSide(color: crimsonDanger, width: 1),
         ),
         focusedErrorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(4),
-          borderSide: const BorderSide(color: crimsonDanger, width: 1.5),
+          borderSide: BorderSide(color: crimsonDanger, width: 1.5),
         ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(4),
-          borderSide: const BorderSide(color: borderTech, width: 1),
+          borderSide: BorderSide(color: borderTech, width: 1),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
@@ -165,7 +280,7 @@ class TacticalTheme {
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           foregroundColor: textPrimary,
-          side: const BorderSide(color: borderTech, width: 1),
+          side: BorderSide(color: borderTech, width: 1),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(4),
@@ -175,18 +290,18 @@ class TacticalTheme {
       chipTheme: ChipThemeData(
         backgroundColor: bgSurface,
         selectedColor: amberDim,
-        side: const BorderSide(color: borderTech, width: 1),
+        side: BorderSide(color: borderTech, width: 1),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(4),
         ),
-        labelStyle: const TextStyle(color: textPrimary, fontSize: 12),
+        labelStyle: TextStyle(color: textPrimary, fontSize: 12),
       ),
       snackBarTheme: SnackBarThemeData(
         backgroundColor: bgElevated,
         contentTextStyle: monoStyle(fontSize: 12, color: amberBright),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(4),
-          side: const BorderSide(color: amberPrimary, width: 1),
+          side: BorderSide(color: amberPrimary, width: 1),
         ),
         behavior: SnackBarBehavior.floating,
       ),
@@ -315,14 +430,14 @@ class TacticalActionSquare extends StatelessWidget {
     required this.icon,
     required this.tooltip,
     required this.onPressed,
-    this.color = TacticalTheme.cyanTactical,
+    this.color,
     this.size = 30,
   });
 
   final IconData icon;
   final String tooltip;
   final VoidCallback? onPressed;
-  final Color color;
+  final Color? color;
   final double size;
 
   @override
@@ -340,7 +455,7 @@ class TacticalActionSquare extends StatelessWidget {
             borderRadius: BorderRadius.circular(4),
             border: Border.all(color: TacticalTheme.borderTech, width: 1),
           ),
-          child: Icon(icon, size: 15, color: color),
+          child: Icon(icon, size: 15, color: color ?? TacticalTheme.cyanTactical),
         ),
       ),
     );

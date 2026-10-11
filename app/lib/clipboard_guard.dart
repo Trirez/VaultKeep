@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// Copies a secret and clears the clipboard after a delay, but only if the
@@ -14,20 +15,30 @@ class ClipboardGuard {
   static Timer? _timer;
   static String? _activeSecret;
 
+  @visibleForTesting
+  static bool get hasActiveSecret => _activeSecret != null;
+
   static Future<void> copySecret(
     String value, {
     Duration clearAfter = const Duration(seconds: 15),
   }) async {
     _activeSecret = value;
-    await Clipboard.setData(ClipboardData(text: value));
+    try {
+      await Clipboard.setData(ClipboardData(text: value));
+    } catch (_) {}
     _timer?.cancel();
     _timer = Timer(clearAfter, () async {
-      final current = await Clipboard.getData(Clipboard.kTextPlain);
-      if (current?.text == _activeSecret) {
-        await Clipboard.setData(const ClipboardData(text: ''));
-      }
+      final secretToClear = _activeSecret;
       _activeSecret = null;
       _timer = null;
+      if (secretToClear != null) {
+        try {
+          final current = await Clipboard.getData(Clipboard.kTextPlain);
+          if (current?.text == secretToClear) {
+            await Clipboard.setData(const ClipboardData(text: ''));
+          }
+        } catch (_) {}
+      }
     });
   }
 
@@ -36,11 +47,14 @@ class ClipboardGuard {
     _timer?.cancel();
     _timer = null;
     if (_activeSecret != null) {
-      final current = await Clipboard.getData(Clipboard.kTextPlain);
-      if (current?.text == _activeSecret) {
-        await Clipboard.setData(const ClipboardData(text: ''));
-      }
+      final secretToClear = _activeSecret;
       _activeSecret = null;
+      try {
+        final current = await Clipboard.getData(Clipboard.kTextPlain);
+        if (current?.text == secretToClear) {
+          await Clipboard.setData(const ClipboardData(text: ''));
+        }
+      } catch (_) {}
     }
   }
 }

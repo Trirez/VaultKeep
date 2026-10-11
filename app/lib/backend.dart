@@ -103,6 +103,52 @@ class VaultTotp {
   final int period;
 }
 
+class VaultCustomField {
+  const VaultCustomField({
+    required this.name,
+    required this.value,
+    this.fieldType = 'text',
+    this.sensitive = false,
+    this.section = '',
+  });
+
+  final String name;
+  final String value;
+  final String fieldType;
+  final bool sensitive;
+  final String section;
+}
+
+class VaultInfo {
+  const VaultInfo({
+    required this.path,
+    required this.entryCount,
+    required this.groupCount,
+    required this.kdfIterations,
+    required this.kdfMemoryMib,
+    required this.kdfParallelism,
+  });
+
+  final String path;
+  final int entryCount;
+  final int groupCount;
+  final int kdfIterations;
+  final int kdfMemoryMib;
+  final int kdfParallelism;
+}
+
+class PasswordEvaluation {
+  const PasswordEvaluation({
+    required this.score,
+    required this.label,
+    required this.isCompromised,
+  });
+
+  final int score;
+  final String label;
+  final bool isCompromised;
+}
+
 class PasswordGenConfig {
   const PasswordGenConfig({
     this.length = 24,
@@ -117,6 +163,7 @@ class PasswordGenConfig {
     this.minSymbols = 1,
     this.excludeChars = '',
     this.includeChars = '',
+    this.separator = '-',
   });
 
   final int length;
@@ -131,6 +178,7 @@ class PasswordGenConfig {
   final int minSymbols;
   final String excludeChars;
   final String includeChars;
+  final String separator;
 }
 
 class VaultItem {
@@ -158,6 +206,7 @@ class VaultItem {
     this.isCompromised = false,
     this.isBreached = false,
     this.isExpired = false,
+    this.email = '',
   });
 
   final String id;
@@ -183,6 +232,7 @@ class VaultItem {
   final bool isCompromised;
   final bool isBreached;
   final bool isExpired;
+  final String email;
 }
 
 class VaultEntry {
@@ -212,6 +262,12 @@ class VaultEntry {
     this.isCompromised = false,
     this.isBreached = false,
     this.isExpired = false,
+    this.email = '',
+    this.phone = '',
+    this.securityQuestion = '',
+    this.hasSecurityAnswer = false,
+    this.sections = const [],
+    this.customFields = const [],
   });
 
   final String id;
@@ -239,6 +295,12 @@ class VaultEntry {
   final bool isCompromised;
   final bool isBreached;
   final bool isExpired;
+  final String email;
+  final String phone;
+  final String securityQuestion;
+  final bool hasSecurityAnswer;
+  final List<String> sections;
+  final List<VaultCustomField> customFields;
 }
 
 /// What the edit screen submits. Deliberately has no toString, so a stray log
@@ -258,6 +320,12 @@ class EntryDraft {
     this.isFavorite = false,
     this.isArchived = false,
     this.isTrashed = false,
+    this.email = '',
+    this.phone = '',
+    this.securityQuestion = '',
+    this.securityAnswer,
+    this.sections = const [],
+    this.customFields = const [],
   });
 
   final String title;
@@ -273,6 +341,12 @@ class EntryDraft {
   final bool isFavorite;
   final bool isArchived;
   final bool isTrashed;
+  final String email;
+  final String phone;
+  final String securityQuestion;
+  final String? securityAnswer;
+  final List<String> sections;
+  final List<VaultCustomField> customFields;
 }
 
 abstract class VaultBackend {
@@ -283,6 +357,8 @@ abstract class VaultBackend {
   Future<VaultEntry> get(String id);
   Future<String> revealPassword(String id);
   Future<String?> revealOtpUri(String id);
+  Future<String?> revealSecurityAnswer(String id);
+  Future<String> revealCustomField(String id, int index);
 
   /// Adds (`id == null`) or updates an entry and returns its id.
   Future<String> save(String? id, EntryDraft draft);
@@ -297,7 +373,12 @@ abstract class VaultBackend {
   Future<void> delete(String id);
   Future<String> generate({int length = 24, bool symbols = true});
   Future<String> generateCustom(PasswordGenConfig config);
+  Future<PasswordEvaluation> evaluatePassword(String password);
+  Future<VaultInfo> getVaultInfo();
   Future<String> createBackup(String backupDir, {int maxBackups = 60});
+  Future<List<String>> listBackups(String backupDir);
+  Future<void> restoreBackup(String backupPath, String backupMaster);
+  Future<void> eraseVault(String currentMaster);
 
   Future<List<VaultGroup>> listGroups();
   Future<String> createGroup(String name);
@@ -322,5 +403,13 @@ abstract class VaultBackend {
   });
   Future<void> removePasskey(String entryId);
   Future<void> changeMasterPassword(String currentMaster, String newMaster);
+  Future<String> duplicateEntry(String id);
+  Future<int> exportVault(
+    String destPath,
+    String currentMaster, {
+    String format = 'kdbx',
+  });
+  Future<int> importCsv(String csvContent);
 }
+
 

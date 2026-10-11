@@ -12,9 +12,14 @@ Future<void> main() async {
   await RustLib.init();
 
   final dir = await getApplicationDocumentsDirectory();
+  final controller = VaultController(
+    RustBackend(),
+    settingsFilePath: p.join(dir.path, 'vaultkeep_settings.json'),
+  );
+  await controller.initializePlatformSettings();
   runApp(
     VaultKeepApp(
-      controller: VaultController(RustBackend()),
+      controller: controller,
       defaultVaultPath: p.join(dir.path, 'vaultkeep.kdbx'),
     ),
   );

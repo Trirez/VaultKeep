@@ -29,18 +29,6 @@ const List<String> kEnpassFieldTypes = [
   'Text',
 ];
 
-class GeneratedPasswordRecord {
-  const GeneratedPasswordRecord({
-    required this.password,
-    required this.domainOrTitle,
-    required this.timestampLabel,
-  });
-
-  final String password;
-  final String domainOrTitle;
-  final String timestampLabel;
-}
-
 class CustomFieldEntry {
   CustomFieldEntry({
     required this.name,
@@ -48,6 +36,8 @@ class CustomFieldEntry {
     required this.section,
     required this.sensitive,
     String initialValue = '',
+    this.originalIndex,
+    this.loaded = true,
   }) : controller = TextEditingController(text: initialValue);
 
   String name;
@@ -55,6 +45,8 @@ class CustomFieldEntry {
   String section;
   bool sensitive;
   bool revealed = false;
+  int? originalIndex;
+  bool loaded;
   final TextEditingController controller;
 
   void dispose() {
@@ -70,6 +62,8 @@ class EntryScreen extends StatefulWidget {
     super.key,
     required this.controller,
     this.entryId,
+    this.initialCategory,
+    this.autofocusTitle = false,
     this.isEmbedded = false,
     this.onSaved,
     this.onDeleted,
@@ -77,6 +71,8 @@ class EntryScreen extends StatefulWidget {
 
   final VaultController controller;
   final String? entryId;
+  final String? initialCategory;
+  final bool autofocusTitle;
   final bool isEmbedded;
   final ValueChanged<String>? onSaved;
   final VoidCallback? onDeleted;
@@ -86,17 +82,9 @@ class EntryScreen extends StatefulWidget {
 }
 
 class _EntryScreenState extends State<EntryScreen> {
-  static final List<GeneratedPasswordRecord> _generatorHistory = [];
-  static final Map<String, List<({
-    String name,
-    String fieldType,
-    String section,
-    bool sensitive,
-    String value,
-  })>> _savedCustomFieldsByEntry = {};
-  static final Map<String, List<String>> _savedSectionsByEntry = {};
-
   final _form = GlobalKey<FormState>();
+  final _titleFocusNode = FocusNode();
+
   final _title = TextEditingController();
   final _username = TextEditingController();
   final _email = TextEditingController();
@@ -130,6 +118,12 @@ class _EntryScreenState extends State<EntryScreen> {
   bool _show = false;
   bool _showOtp = false;
   bool _showSecurityAnswer = false;
+  bool _hasExistingOtp = false;
+  bool _otpLoaded = true;
+  bool _otpModified = false;
+  bool _hasExistingSecurityAnswer = false;
+  bool _securityAnswerLoaded = true;
+  bool _securityAnswerModified = false;
   int _genLength = 24;
   bool _genSymbols = true;
 
@@ -142,8 +136,13 @@ class _EntryScreenState extends State<EntryScreen> {
       unawaited(_load());
     } else {
       _selectedGroupId = widget.controller.selectedGroupId;
-      if (widget.controller.selectedItemCategory != null) {
-        _selectedCategory = widget.controller.selectedItemCategory!;
+      _selectedCategory = widget.initialCategory ??
+          widget.controller.selectedItemCategory ??
+          'Login';
+      if (widget.autofocusTitle) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _titleFocusNode.requestFocus();
+        });
       }
     }
   }
@@ -158,7 +157,8 @@ class _EntryScreenState extends State<EntryScreen> {
   @override
   void didUpdateWidget(covariant EntryScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.entryId != widget.entryId) {
+    if (oldWidget.entryId != widget.entryId ||
+        oldWidget.initialCategory != widget.initialCategory) {
       _totpTimer?.cancel();
       _totp = null;
       _loadedRevisionDate = null;
@@ -185,15 +185,27 @@ class _EntryScreenState extends State<EntryScreen> {
       _show = false;
       _showOtp = false;
       _showSecurityAnswer = false;
+      _hasExistingOtp = false;
+      _otpLoaded = true;
+      _otpModified = false;
+      _hasExistingSecurityAnswer = false;
+      _securityAnswerLoaded = true;
+      _securityAnswerModified = false;
 
       if (_isEdit) {
         unawaited(_load());
       } else {
         setState(() {
           _selectedGroupId = widget.controller.selectedGroupId;
-          _selectedCategory =
-              widget.controller.selectedItemCategory ?? 'Login';
+          _selectedCategory = widget.initialCategory ??
+              widget.controller.selectedItemCategory ??
+              'Login';
         });
+        if (widget.autofocusTitle) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _titleFocusNode.requestFocus();
+          });
+        }
       }
     }
   }
@@ -205,6 +217,7 @@ class _EntryScreenState extends State<EntryScreen> {
     _otpUri.text = '';
     _securityAnswer.text = '';
     _clearCustomFields();
+    _titleFocusNode.dispose();
     _title.dispose();
     _username.dispose();
     _email.dispose();
@@ -227,26 +240,15 @@ class _EntryScreenState extends State<EntryScreen> {
 
   void _recordGeneratedPassword(String password) {
     if (password.isEmpty) return;
-    final now = DateTime.now();
     final label = _url.text.trim().isNotEmpty
         ? _url.text.trim()
         : (_title.text.trim().isNotEmpty
             ? _title.text.trim()
             : 'Generated Password');
-    final ts =
-        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} '
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
-    _generatorHistory.insert(
-      0,
-      GeneratedPasswordRecord(
-        password: password,
-        domainOrTitle: label,
-        timestampLabel: ts,
-      ),
+    widget.controller.recordGeneratedPassword(
+      password,
+      domainOrTitle: label,
     );
-    if (_generatorHistory.length > 25) {
-      _generatorHistory.removeLast();
-    }
   }
 
   Future<void> _refreshTotp() async {
@@ -261,18 +263,84 @@ class _EntryScreenState extends State<EntryScreen> {
     } catch (_) {}
   }
 
+  Future<void> _toggleShowOtp() async {
+    if (!_showOtp && !_otpLoaded && widget.entryId != null) {
+      try {
+        final uri = await widget.controller.revealOtpUri(widget.entryId!);
+        if (!mounted || widget.controller.status != VaultStatus.unlocked) {
+          return;
+        }
+        _otpUri.text = uri ?? '';
+        _otpLoaded = true;
+      } catch (e) {
+        if (mounted) _toast(VaultController.describe(e));
+        return;
+      }
+    }
+    setState(() => _showOtp = !_showOtp);
+  }
+
+  Future<void> _toggleShowSecurityAnswer() async {
+    if (!_showSecurityAnswer &&
+        !_securityAnswerLoaded &&
+        widget.entryId != null) {
+      try {
+        final ans =
+            await widget.controller.revealSecurityAnswer(widget.entryId!);
+        if (!mounted || widget.controller.status != VaultStatus.unlocked) {
+          return;
+        }
+        _securityAnswer.text = ans ?? '';
+        _securityAnswerLoaded = true;
+      } catch (e) {
+        if (mounted) _toast(VaultController.describe(e));
+        return;
+      }
+    }
+    setState(() => _showSecurityAnswer = !_showSecurityAnswer);
+  }
+
+  Future<bool> _ensureCustomFieldLoaded(CustomFieldEntry cf) async {
+    if (cf.loaded ||
+        !cf.sensitive ||
+        widget.entryId == null ||
+        cf.originalIndex == null) {
+      return true;
+    }
+    try {
+      final val = await widget.controller.revealCustomField(
+        widget.entryId!,
+        cf.originalIndex!,
+      );
+      if (!mounted || widget.controller.status != VaultStatus.unlocked) {
+        return false;
+      }
+      cf.controller.text = val;
+      cf.loaded = true;
+      return true;
+    } catch (e) {
+      if (mounted) _toast(VaultController.describe(e));
+      return false;
+    }
+  }
+
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
       final id = widget.entryId!;
       final entry = await widget.controller.loadEntry(id);
       final password = await widget.controller.revealPassword(id);
-      final otpUri =
-          entry.hasOtp ? await widget.controller.revealOtpUri(id) : null;
       if (!mounted || widget.controller.status != VaultStatus.unlocked) return;
       _title.text = entry.title;
       _username.text = entry.username;
+      _email.text = entry.email;
       _url.text = entry.url;
+      _phone.text = entry.phone;
+      _securityQuestion.text = entry.securityQuestion;
+      _hasExistingSecurityAnswer = entry.hasSecurityAnswer;
+      _securityAnswerLoaded = !entry.hasSecurityAnswer;
+      _securityAnswerModified = false;
+      _securityAnswer.text = '';
       _notes.text = entry.notes;
       _password.text = password;
       _selectedGroupId = entry.groupId;
@@ -283,7 +351,10 @@ class _EntryScreenState extends State<EntryScreen> {
       _isArchived = entry.isArchived;
       _isTrashed = entry.isTrashed;
       _tagsCtrl.text = entry.tags.join(', ');
-      _otpUri.text = otpUri ?? '';
+      _hasExistingOtp = entry.hasOtp;
+      _otpLoaded = !entry.hasOtp;
+      _otpModified = false;
+      _otpUri.text = '';
       _attachments = List.of(entry.attachments);
       _passkey = entry.passkey;
       _lastPasskeyAssertion = null;
@@ -291,25 +362,27 @@ class _EntryScreenState extends State<EntryScreen> {
       _loadedRevisionDate = entry.revisionDate;
 
       _clearCustomFields();
-      final savedSections = _savedSectionsByEntry[id];
-      if (savedSections != null && savedSections.isNotEmpty) {
-        _sections = List.of(savedSections);
+      if (entry.sections.isNotEmpty) {
+        _sections = List.of(entry.sections);
       } else {
         _sections = ['ADDITIONAL DETAILS', 'Section'];
       }
-      final savedFields = _savedCustomFieldsByEntry[id];
-      if (savedFields != null) {
-        for (final sf in savedFields) {
-          _customFields.add(
-            CustomFieldEntry(
-              name: sf.name,
-              fieldType: sf.fieldType,
-              section: sf.section,
-              sensitive: sf.sensitive,
-              initialValue: sf.value,
-            ),
-          );
+      for (var i = 0; i < entry.customFields.length; i++) {
+        final cf = entry.customFields[i];
+        if (cf.section.isNotEmpty && !_sections.contains(cf.section)) {
+          _sections.add(cf.section);
         }
+        _customFields.add(
+          CustomFieldEntry(
+            name: cf.name,
+            fieldType: cf.fieldType,
+            section: cf.section.isEmpty ? _sections.last : cf.section,
+            sensitive: cf.sensitive,
+            initialValue: cf.sensitive ? '' : cf.value,
+            originalIndex: i,
+            loaded: !cf.sensitive,
+          ),
+        );
       }
 
       if (entry.hasOtp) {
@@ -361,7 +434,8 @@ class _EntryScreenState extends State<EntryScreen> {
   }
 
   Future<void> _showGeneratorHistoryDialog() async {
-    if (_generatorHistory.isEmpty) {
+    final history = widget.controller.generatorHistory;
+    if (history.isEmpty) {
       // Seed with current generated password if user opens history immediately
       final sample = await widget.controller.generatePassword(
         length: _genLength,
@@ -386,13 +460,13 @@ class _EntryScreenState extends State<EntryScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(
+                      Icon(
                         Icons.history,
                         color: TacticalTheme.amberPrimary,
                         size: 20,
                       ),
                       const SizedBox(width: 8),
-                      const Expanded(
+                      Expanded(
                         child: Text(
                           'Generator History',
                           style: TextStyle(
@@ -413,10 +487,10 @@ class _EntryScreenState extends State<EntryScreen> {
                   Flexible(
                     child: ListView.separated(
                       shrinkWrap: true,
-                      itemCount: _generatorHistory.length,
+                      itemCount: history.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 8),
                       itemBuilder: (_, i) {
-                        final rec = _generatorHistory[i];
+                        final rec = history[i];
                         final isRevealed = revealedIndices.contains(i);
                         return Container(
                           padding: const EdgeInsets.all(12),
@@ -433,7 +507,7 @@ class _EntryScreenState extends State<EntryScreen> {
                                   children: [
                                     Text(
                                       rec.domainOrTitle,
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                         fontSize: 13,
                                         fontWeight: FontWeight.w700,
                                         color: TacticalTheme.textPrimary,
@@ -449,7 +523,7 @@ class _EntryScreenState extends State<EntryScreen> {
                                       )
                                     else
                                       Text(
-                                        '••••••••••••',
+                                        'â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢',
                                         style: TacticalTheme.monoStyle(
                                           fontSize: 13,
                                           color: TacticalTheme.amberBright,
@@ -537,7 +611,7 @@ class _EntryScreenState extends State<EntryScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
+                      Text(
                         'Field Options',
                         style: TextStyle(
                           fontSize: 16,
@@ -602,7 +676,7 @@ class _EntryScreenState extends State<EntryScreen> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text(
+                        Text(
                           'Sensitive',
                           style: TextStyle(
                             fontSize: 13,
@@ -628,7 +702,7 @@ class _EntryScreenState extends State<EntryScreen> {
                         key: const ValueKey('field_options_delete'),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: TacticalTheme.crimsonDanger,
-                          side: const BorderSide(
+                          side: BorderSide(
                             color: TacticalTheme.crimsonDanger,
                           ),
                         ),
@@ -955,12 +1029,26 @@ class _EntryScreenState extends State<EntryScreen> {
 
     setState(() => _saving = true);
     try {
+      for (final cf in _customFields) {
+        if (!cf.loaded && cf.sensitive) {
+          final ok = await _ensureCustomFieldLoaded(cf);
+          if (!ok || !mounted) {
+            if (mounted) setState(() => _saving = false);
+            return;
+          }
+        }
+      }
       final parsedTags = _parseTags();
       final hasNonDefaultMeta = _selectedCategory != 'Login' ||
           parsedTags.isNotEmpty ||
           _isFavorite ||
           _isArchived ||
           _isTrashed;
+      final effectiveOtp =
+          (_otpLoaded || _otpModified) ? _otpUri.text.trim() : null;
+      final effectiveSecAnswer = (_securityAnswerLoaded || _securityAnswerModified)
+          ? _securityAnswer.text
+          : null;
       final savedId = await widget.controller.save(
         widget.entryId,
         EntryDraft(
@@ -970,31 +1058,38 @@ class _EntryScreenState extends State<EntryScreen> {
           url: _url.text.trim(),
           notes: _notes.text,
           groupId: _selectedGroupId,
-          otp: _otpUri.text.trim(),
+          otp: effectiveOtp,
           lastKnownRevisionDate: _loadedRevisionDate,
           category: hasNonDefaultMeta ? _selectedCategory : null,
           tags: parsedTags,
           isFavorite: _isFavorite,
           isArchived: _isArchived,
           isTrashed: _isTrashed,
+          email: _email.text.trim(),
+          phone: _phone.text.trim(),
+          securityQuestion: _securityQuestion.text.trim(),
+          securityAnswer: effectiveSecAnswer,
+          sections: List.of(_sections),
+          customFields: [
+            for (final cf in _customFields)
+              VaultCustomField(
+                name: cf.name,
+                value: cf.controller.text,
+                fieldType: cf.fieldType,
+                sensitive: cf.sensitive,
+                section: cf.section,
+              ),
+          ],
         ),
       );
-      _savedSectionsByEntry[savedId] = List.of(_sections);
-      _savedCustomFieldsByEntry[savedId] = [
-        for (final cf in _customFields)
-          (
-            name: cf.name,
-            fieldType: cf.fieldType,
-            section: cf.section,
-            sensitive: cf.sensitive,
-            value: cf.controller.text,
-          ),
-      ];
       if (!mounted) return;
+
       if (widget.controller.status == VaultStatus.unlocked) {
         try {
           final refreshed = await widget.controller.loadEntry(savedId);
           _loadedRevisionDate = refreshed.revisionDate;
+          _hasExistingOtp = refreshed.hasOtp;
+          _hasExistingSecurityAnswer = refreshed.hasSecurityAnswer;
         } catch (_) {}
       }
       if (!mounted) return;
@@ -1003,7 +1098,10 @@ class _EntryScreenState extends State<EntryScreen> {
         _toast('Entry saved to KDBX4 vault.');
         widget.onSaved?.call(savedId);
         if (widget.entryId != null) {
-          if (_otpUri.text.trim().isNotEmpty) {
+          final hasActiveOtp = (_otpLoaded || _otpModified)
+              ? _otpUri.text.trim().isNotEmpty
+              : _hasExistingOtp;
+          if (hasActiveOtp) {
             unawaited(_refreshTotp());
             _totpTimer?.cancel();
             _totpTimer = Timer.periodic(
@@ -1081,7 +1179,7 @@ class _EntryScreenState extends State<EntryScreen> {
           unawaited(_addAttachment());
         }
       },
-      itemBuilder: (ctx) => const [
+      itemBuilder: (ctx) => [
         PopupMenuItem(
           value: 'field',
           child: Row(
@@ -1091,8 +1189,8 @@ class _EntryScreenState extends State<EntryScreen> {
                 size: 18,
                 color: TacticalTheme.amberPrimary,
               ),
-              SizedBox(width: 10),
-              Text('Add Field'),
+              const SizedBox(width: 10),
+              const Text('Add Field'),
             ],
           ),
         ),
@@ -1105,8 +1203,8 @@ class _EntryScreenState extends State<EntryScreen> {
                 size: 18,
                 color: TacticalTheme.cyanTactical,
               ),
-              SizedBox(width: 10),
-              Text('Add Section'),
+              const SizedBox(width: 10),
+              const Text('Add Section'),
             ],
           ),
         ),
@@ -1119,8 +1217,8 @@ class _EntryScreenState extends State<EntryScreen> {
                 size: 18,
                 color: TacticalTheme.emeraldReady,
               ),
-              SizedBox(width: 10),
-              Text('Add Attachment'),
+              const SizedBox(width: 10),
+              const Text('Add Attachment'),
             ],
           ),
         ),
@@ -1145,7 +1243,7 @@ class _EntryScreenState extends State<EntryScreen> {
               ),
             ),
             const SizedBox(width: 4),
-            const Icon(
+            Icon(
               Icons.keyboard_arrow_down,
               size: 15,
               color: TacticalTheme.amberPrimary,
@@ -1163,7 +1261,7 @@ class _EntryScreenState extends State<EntryScreen> {
     final effectiveGroupId = groupValid ? _selectedGroupId : null;
 
     if (_loading) {
-      return const Center(
+      return Center(
         child: CircularProgressIndicator(color: TacticalTheme.amberPrimary),
       );
     }
@@ -1192,7 +1290,7 @@ class _EntryScreenState extends State<EntryScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(
+                      Icon(
                         Icons.timer_outlined,
                         size: 16,
                         color: TacticalTheme.amberPrimary,
@@ -1329,20 +1427,47 @@ class _EntryScreenState extends State<EntryScreen> {
           ],
           const SizedBox(height: 14),
 
-          // Title with Enpass Avatar Badge
+          // Title with Enpass Avatar + Edit Badge (`Enpass_RUtKiX9m54.png`)
           Row(
             children: [
-              TacticalDomainAvatar(
-                title: _title.text.isEmpty ? 'V' : _title.text,
-                url: _url.text,
-                size: 38,
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  TacticalDomainAvatar(
+                    title: _title.text.isEmpty ? 'V' : _title.text,
+                    url: _url.text,
+                    size: 40,
+                  ),
+                  Positioned(
+                    right: -2,
+                    bottom: -2,
+                    child: Container(
+                      width: 16,
+                      height: 16,
+                      decoration: BoxDecoration(
+                        color: TacticalTheme.bgElevated,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: TacticalTheme.amberPrimary,
+                          width: 1,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.edit,
+                        size: 9,
+                        color: TacticalTheme.amberBright,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 12),
               Expanded(
                 child: TextFormField(
                   key: const ValueKey('entry_field_title'),
                   controller: _title,
-                  style: const TextStyle(
+                  focusNode: _titleFocusNode,
+                  style: TextStyle(
                     fontWeight: FontWeight.w600,
                     color: TacticalTheme.textPrimary,
                   ),
@@ -1359,7 +1484,7 @@ class _EntryScreenState extends State<EntryScreen> {
           ),
           const SizedBox(height: 14),
 
-          // Username with Field Options (•••)
+          // Username with Field Options (â€¢â€¢â€¢)
           TextFormField(
             key: const ValueKey('entry_field_username'),
             controller: _username,
@@ -1370,7 +1495,7 @@ class _EntryScreenState extends State<EntryScreen> {
             ),
             decoration: InputDecoration(
               labelText: 'Username',
-              prefixIcon: const Icon(
+              prefixIcon: Icon(
                 Icons.drag_handle,
                 size: 16,
                 color: TacticalTheme.textMuted,
@@ -1380,7 +1505,7 @@ class _EntryScreenState extends State<EntryScreen> {
                 children: [
                   IconButton(
                     tooltip: 'Copy username',
-                    icon: const Icon(
+                    icon: Icon(
                       Icons.copy,
                       size: 17,
                       color: TacticalTheme.cyanTactical,
@@ -1395,7 +1520,7 @@ class _EntryScreenState extends State<EntryScreen> {
                   IconButton(
                     key: const ValueKey('field_options_Username'),
                     tooltip: 'Field Options',
-                    icon: const Icon(
+                    icon: Icon(
                       Icons.more_horiz,
                       size: 18,
                       color: TacticalTheme.textSecondary,
@@ -1420,14 +1545,14 @@ class _EntryScreenState extends State<EntryScreen> {
             ),
             decoration: InputDecoration(
               labelText: 'E-mail',
-              prefixIcon: const Icon(
+              prefixIcon: Icon(
                 Icons.drag_handle,
                 size: 16,
                 color: TacticalTheme.textMuted,
               ),
               suffixIcon: IconButton(
                 tooltip: 'Field Options',
-                icon: const Icon(
+                icon: Icon(
                   Icons.more_horiz,
                   size: 18,
                   color: TacticalTheme.textSecondary,
@@ -1449,55 +1574,72 @@ class _EntryScreenState extends State<EntryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                TextFormField(
-                  key: const ValueKey('entry_field_password'),
-                  controller: _password,
-                  obscureText: !_show,
-                  enableSuggestions: false,
-                  autocorrect: false,
-                  enableIMEPersonalizedLearning: false,
-                  onChanged: (_) => setState(() {}),
-                  style: TacticalTheme.monoStyle(
-                    fontSize: 13,
-                    color: TacticalTheme.amberBright,
-                  ),
-                  decoration: InputDecoration(
-                    labelText: 'Password',
-                    suffixIcon: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: _show ? 'Hide' : 'Show',
-                          icon: Icon(
-                            _show ? Icons.visibility_off : Icons.visibility,
-                            size: 18,
-                          ),
-                          onPressed: () => setState(() => _show = !_show),
+                ListenableBuilder(
+                  listenable: widget.controller,
+                  builder: (context, _) {
+                    final showPw = _show || !widget.controller.hideSensitive;
+                    return TextFormField(
+                      key: const ValueKey('entry_field_password'),
+                      controller: _password,
+                      obscureText: !showPw,
+                      enableSuggestions: false,
+                      autocorrect: false,
+                      enableIMEPersonalizedLearning: false,
+                      onChanged: (_) => setState(() {}),
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 13,
+                        color: TacticalTheme.amberBright,
+                      ),
+                      decoration: InputDecoration(
+                        labelText: 'Password',
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: showPw ? 'Hide' : 'Show',
+                              icon: Icon(
+                                showPw
+                                    ? Icons.visibility_off
+                                    : Icons.visibility,
+                                size: 18,
+                              ),
+                              onPressed: () {
+                                if (!widget.controller.hideSensitive) {
+                                  widget.controller.updateSettings(
+                                    hideSensitive: true,
+                                  );
+                                  setState(() => _show = false);
+                                } else {
+                                  setState(() => _show = !_show);
+                                }
+                              },
+                            ),
+                            IconButton(
+                              tooltip: 'Generate',
+                              icon: Icon(
+                                Icons.autorenew,
+                                size: 18,
+                                color: TacticalTheme.amberPrimary,
+                              ),
+                              onPressed: _generate,
+                            ),
+                            IconButton(
+                              tooltip: 'Copy',
+                              icon: Icon(
+                                Icons.copy,
+                                size: 18,
+                                color: TacticalTheme.cyanTactical,
+                              ),
+                              onPressed: () {
+                                ClipboardGuard.copySecret(_password.text);
+                                _toast('Password copied. Clears in 15 seconds.');
+                              },
+                            ),
+                          ],
                         ),
-                        IconButton(
-                          tooltip: 'Generate',
-                          icon: const Icon(
-                            Icons.autorenew,
-                            size: 18,
-                            color: TacticalTheme.amberPrimary,
-                          ),
-                          onPressed: _generate,
-                        ),
-                        IconButton(
-                          tooltip: 'Copy',
-                          icon: const Icon(
-                            Icons.copy,
-                            size: 18,
-                            color: TacticalTheme.cyanTactical,
-                          ),
-                          onPressed: () {
-                            ClipboardGuard.copySecret(_password.text);
-                            _toast('Password copied. Clears in 15 seconds.');
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
+                      ),
+                    );
+                  },
                 ),
                 const SizedBox(height: 6),
                 // Enpass Password Strength Bar under Password Field
@@ -1511,7 +1653,8 @@ class _EntryScreenState extends State<EntryScreen> {
                           ? TacticalTheme.amberPrimary
                           : TacticalTheme.crimsonDanger),
                 ),
-                if (_show && _password.text.isNotEmpty) ...[
+                if ((_show || !widget.controller.hideSensitive) &&
+                    _password.text.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -1623,7 +1766,7 @@ class _EntryScreenState extends State<EntryScreen> {
           ),
           const SizedBox(height: 14),
 
-          // URL
+          // URL (`Enpass_RUtKiX9m54.png`)
           TextFormField(
             controller: _url,
             keyboardType: TextInputType.url,
@@ -1632,8 +1775,22 @@ class _EntryScreenState extends State<EntryScreen> {
               fontSize: 12,
               color: TacticalTheme.cyanTactical,
             ),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'URL',
+              prefixIcon: Icon(
+                Icons.drag_handle,
+                size: 16,
+                color: TacticalTheme.textMuted,
+              ),
+              suffixIcon: IconButton(
+                tooltip: 'Field Options',
+                icon: Icon(
+                  Icons.more_horiz,
+                  size: 18,
+                  color: TacticalTheme.textSecondary,
+                ),
+                onPressed: () => _showFieldOptionsModal(),
+              ),
             ),
           ),
           const SizedBox(height: 14),
@@ -1779,7 +1936,7 @@ class _EntryScreenState extends State<EntryScreen> {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          'Spec: ES256 (P-256) • Synced (BE=1, BS=1) • Windows 11 & Android 14+',
+                          'Spec: ES256 (P-256) â€¢ Synced (BE=1, BS=1) â€¢ Windows 11 & Android 14+',
                           style: TacticalTheme.monoStyle(
                             fontSize: 9,
                             color: TacticalTheme.emeraldReady,
@@ -1816,7 +1973,7 @@ class _EntryScreenState extends State<EntryScreen> {
                     children: [
                       OutlinedButton.icon(
                         key: const ValueKey('verify_passkey_assertion_btn'),
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.verified_user_outlined,
                           size: 14,
                           color: TacticalTheme.emeraldReady,
@@ -1832,7 +1989,7 @@ class _EntryScreenState extends State<EntryScreen> {
                         onPressed: _verifyPasskeyAssertion,
                       ),
                       OutlinedButton.icon(
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.copy,
                           size: 14,
                           color: TacticalTheme.cyanTactical,
@@ -1853,7 +2010,7 @@ class _EntryScreenState extends State<EntryScreen> {
                         },
                       ),
                       OutlinedButton.icon(
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.delete_outline,
                           size: 14,
                           color: TacticalTheme.crimsonDanger,
@@ -1884,7 +2041,7 @@ class _EntryScreenState extends State<EntryScreen> {
                   Align(
                     alignment: Alignment.centerRight,
                     child: OutlinedButton.icon(
-                      icon: const Icon(
+                      icon: Icon(
                         Icons.fingerprint,
                         size: 15,
                         color: TacticalTheme.amberPrimary,
@@ -1927,8 +2084,22 @@ class _EntryScreenState extends State<EntryScreen> {
               fontSize: 12,
               color: TacticalTheme.textPrimary,
             ),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Phone number',
+              prefixIcon: Icon(
+                Icons.drag_handle,
+                size: 16,
+                color: TacticalTheme.textMuted,
+              ),
+              suffixIcon: IconButton(
+                tooltip: 'Field Options',
+                icon: Icon(
+                  Icons.more_horiz,
+                  size: 18,
+                  color: TacticalTheme.textSecondary,
+                ),
+                onPressed: () => _showFieldOptionsModal(),
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -1941,20 +2112,42 @@ class _EntryScreenState extends State<EntryScreen> {
             enableSuggestions: false,
             autocorrect: false,
             enableIMEPersonalizedLearning: false,
+            onChanged: (_) => _otpModified = true,
             style: TacticalTheme.monoStyle(
               fontSize: 12,
               color: TacticalTheme.textPrimary,
             ),
             decoration: InputDecoration(
               labelText: 'One-time code (TOTP URI or Secret)',
-              hintText: 'Enter secret key',
-              suffixIcon: IconButton(
-                tooltip: _showOtp ? 'Hide' : 'Show',
-                icon: Icon(
-                  _showOtp ? Icons.visibility_off : Icons.visibility,
-                  size: 18,
-                ),
-                onPressed: () => setState(() => _showOtp = !_showOtp),
+              hintText: _hasExistingOtp && !_otpLoaded && !_otpModified
+                  ? 'â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢ (Stored â€” tap Show to reveal)'
+                  : 'Enter secret key',
+              prefixIcon: Icon(
+                Icons.drag_handle,
+                size: 16,
+                color: TacticalTheme.textMuted,
+              ),
+              suffixIcon: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: _showOtp ? 'Hide' : 'Show',
+                    icon: Icon(
+                      _showOtp ? Icons.visibility_off : Icons.visibility,
+                      size: 18,
+                    ),
+                    onPressed: _toggleShowOtp,
+                  ),
+                  IconButton(
+                    tooltip: 'Field Options',
+                    icon: Icon(
+                      Icons.more_horiz,
+                      size: 18,
+                      color: TacticalTheme.textSecondary,
+                    ),
+                    onPressed: () => _showFieldOptionsModal(),
+                  ),
+                ],
               ),
             ),
           ),
@@ -1968,8 +2161,22 @@ class _EntryScreenState extends State<EntryScreen> {
               fontSize: 12,
               color: TacticalTheme.textPrimary,
             ),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Security question',
+              prefixIcon: Icon(
+                Icons.drag_handle,
+                size: 16,
+                color: TacticalTheme.textMuted,
+              ),
+              suffixIcon: IconButton(
+                tooltip: 'Field Options',
+                icon: Icon(
+                  Icons.more_horiz,
+                  size: 18,
+                  color: TacticalTheme.textSecondary,
+                ),
+                onPressed: () => _showFieldOptionsModal(),
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -1982,23 +2189,46 @@ class _EntryScreenState extends State<EntryScreen> {
             enableSuggestions: false,
             autocorrect: false,
             enableIMEPersonalizedLearning: false,
+            onChanged: (_) => _securityAnswerModified = true,
             style: TacticalTheme.monoStyle(
               fontSize: 12,
               color: TacticalTheme.textPrimary,
             ),
             decoration: InputDecoration(
               labelText: 'Security answer',
-              suffixIcon: IconButton(
-                tooltip: _showSecurityAnswer ? 'Hide' : 'Show',
-                icon: Icon(
-                  _showSecurityAnswer
-                      ? Icons.visibility_off
-                      : Icons.visibility,
-                  size: 18,
-                ),
-                onPressed: () => setState(
-                  () => _showSecurityAnswer = !_showSecurityAnswer,
-                ),
+              hintText: _hasExistingSecurityAnswer &&
+                      !_securityAnswerLoaded &&
+                      !_securityAnswerModified
+                  ? 'â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢ (Stored â€” tap Show to reveal)'
+                  : null,
+              prefixIcon: Icon(
+                Icons.drag_handle,
+                size: 16,
+                color: TacticalTheme.textMuted,
+              ),
+              suffixIcon: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: _showSecurityAnswer ? 'Hide' : 'Show',
+                    icon: Icon(
+                      _showSecurityAnswer
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                      size: 18,
+                    ),
+                    onPressed: _toggleShowSecurityAnswer,
+                  ),
+                  IconButton(
+                    tooltip: 'Field Options',
+                    icon: Icon(
+                      Icons.more_horiz,
+                      size: 18,
+                      color: TacticalTheme.textSecondary,
+                    ),
+                    onPressed: () => _showFieldOptionsModal(),
+                  ),
+                ],
               ),
             ),
           ),
@@ -2013,7 +2243,7 @@ class _EntryScreenState extends State<EntryScreen> {
               children: [
                 Text(
                   sectionName,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
                     color: TacticalTheme.textPrimary,
@@ -2039,13 +2269,17 @@ class _EntryScreenState extends State<EntryScreen> {
                   enableSuggestions: !cf.sensitive,
                   autocorrect: !cf.sensitive,
                   enableIMEPersonalizedLearning: !cf.sensitive,
+                  onChanged: (_) => cf.loaded = true,
                   style: TacticalTheme.monoStyle(
                     fontSize: 12,
                     color: TacticalTheme.textPrimary,
                   ),
                   decoration: InputDecoration(
                     labelText: '${cf.name} (${cf.fieldType})',
-                    prefixIcon: const Icon(
+                    hintText: cf.sensitive && !cf.loaded
+                        ? 'â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢ (Stored â€” tap Show to reveal)'
+                        : null,
+                    prefixIcon: Icon(
                       Icons.drag_handle,
                       size: 16,
                       color: TacticalTheme.textMuted,
@@ -2062,19 +2296,28 @@ class _EntryScreenState extends State<EntryScreen> {
                                   : Icons.visibility,
                               size: 17,
                             ),
-                            onPressed: () =>
-                                setState(() => cf.revealed = !cf.revealed),
+                            onPressed: () async {
+                              if (!cf.revealed) {
+                                final ok = await _ensureCustomFieldLoaded(cf);
+                                if (!ok || !mounted) return;
+                              }
+                              setState(() => cf.revealed = !cf.revealed);
+                            },
                           ),
                         IconButton(
                           tooltip: 'Copy ${cf.name}',
-                          icon: const Icon(
+                          icon: Icon(
                             Icons.copy,
                             size: 16,
                             color: TacticalTheme.cyanTactical,
                           ),
-                          onPressed: () {
+                          onPressed: () async {
+                            final ok = await _ensureCustomFieldLoaded(cf);
+                            if (!ok || !mounted) return;
                             if (cf.controller.text.isNotEmpty) {
-                              ClipboardGuard.copySecret(cf.controller.text);
+                              unawaited(
+                                ClipboardGuard.copySecret(cf.controller.text),
+                              );
                               _toast(
                                 '${cf.name} copied. Clears in 15 seconds.',
                               );
@@ -2083,7 +2326,7 @@ class _EntryScreenState extends State<EntryScreen> {
                         ),
                         IconButton(
                           tooltip: 'Field Options',
-                          icon: const Icon(
+                          icon: Icon(
                             Icons.more_horiz,
                             size: 18,
                             color: TacticalTheme.amberPrimary,
@@ -2124,7 +2367,7 @@ class _EntryScreenState extends State<EntryScreen> {
               fontSize: 12,
               color: TacticalTheme.amberBright,
             ),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Tags',
               hintText: 'e.g. Cards, Crypto, Email, Finance, Hosting',
               prefixIcon: Icon(
@@ -2162,7 +2405,7 @@ class _EntryScreenState extends State<EntryScreen> {
                       ),
                     ),
                     TextButton.icon(
-                      icon: const Icon(
+                      icon: Icon(
                         Icons.attach_file,
                         size: 16,
                         color: TacticalTheme.amberPrimary,
@@ -2199,13 +2442,36 @@ class _EntryScreenState extends State<EntryScreen> {
                     ),
                     child: Column(
                       children: [
-                        const Icon(
-                          Icons.cloud_upload_outlined,
-                          size: 24,
-                          color: TacticalTheme.textMuted,
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.description_outlined,
+                              size: 20,
+                              color: TacticalTheme.textMuted,
+                            ),
+                            const SizedBox(width: 8),
+                            Icon(
+                              Icons.image_outlined,
+                              size: 20,
+                              color: TacticalTheme.textMuted,
+                            ),
+                            const SizedBox(width: 8),
+                            Icon(
+                              Icons.folder_zip_outlined,
+                              size: 20,
+                              color: TacticalTheme.textMuted,
+                            ),
+                            const SizedBox(width: 8),
+                            Icon(
+                              Icons.verified_user_outlined,
+                              size: 20,
+                              color: TacticalTheme.textMuted,
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 6),
-                        const Text(
+                        const SizedBox(height: 8),
+                        Text(
                           'Drag and drop or click here',
                           style: TextStyle(
                             fontSize: 12,
@@ -2253,7 +2519,7 @@ class _EntryScreenState extends State<EntryScreen> {
                       ),
                       child: Row(
                         children: [
-                          const Icon(
+                          Icon(
                             Icons.insert_drive_file_outlined,
                             size: 16,
                             color: TacticalTheme.cyanTactical,
@@ -2284,7 +2550,7 @@ class _EntryScreenState extends State<EntryScreen> {
                           ),
                           IconButton(
                             tooltip: 'View details',
-                            icon: const Icon(
+                            icon: Icon(
                               Icons.visibility,
                               size: 16,
                               color: TacticalTheme.cyanTactical,
@@ -2293,7 +2559,7 @@ class _EntryScreenState extends State<EntryScreen> {
                           ),
                           IconButton(
                             tooltip: 'Remove',
-                            icon: const Icon(
+                            icon: Icon(
                               Icons.delete_outline,
                               size: 16,
                               color: TacticalTheme.crimsonDanger,
@@ -2314,7 +2580,7 @@ class _EntryScreenState extends State<EntryScreen> {
             key: const ValueKey('entry_button_save'),
             onPressed: _saving ? null : _save,
             child: _saving
-                ? const SizedBox(
+                ? SizedBox(
                     height: 18,
                     width: 18,
                     child: CircularProgressIndicator(
@@ -2342,7 +2608,7 @@ class _EntryScreenState extends State<EntryScreen> {
             Container(
               height: 42,
               padding: const EdgeInsets.symmetric(horizontal: 10),
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 color: TacticalTheme.bgSurface,
                 border: Border(
                   bottom: BorderSide(color: TacticalTheme.borderTech, width: 1),
@@ -2350,7 +2616,7 @@ class _EntryScreenState extends State<EntryScreen> {
               ),
               child: Row(
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.verified_user_outlined,
                     size: 15,
                     color: TacticalTheme.amberPrimary,
@@ -2386,12 +2652,35 @@ class _EntryScreenState extends State<EntryScreen> {
                         setState(() => _isFavorite = !_isFavorite),
                   ),
                   _buildAddDropdownButton(),
+                  const SizedBox(width: 6),
+                  InkWell(
+                    key: const ValueKey('entry_header_save'),
+                    onTap: _saving ? null : _save,
+                    borderRadius: BorderRadius.circular(4),
+                    child: Container(
+                      height: 30,
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: TacticalTheme.amberPrimary,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        'Save',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: TacticalTheme.bgDeepCarbon,
+                        ),
+                      ),
+                    ),
+                  ),
                   if (_isEdit)
                     IconButton(
                       key: const ValueKey('entry_button_delete'),
                       tooltip: 'Delete',
                       visualDensity: VisualDensity.compact,
-                      icon: const Icon(
+                      icon: Icon(
                         Icons.delete_outline,
                         size: 18,
                         color: TacticalTheme.crimsonDanger,
@@ -2441,7 +2730,7 @@ class _EntryScreenState extends State<EntryScreen> {
             IconButton(
               key: const ValueKey('entry_button_delete'),
               tooltip: 'Delete',
-              icon: const Icon(
+              icon: Icon(
                 Icons.delete_outline,
                 color: TacticalTheme.crimsonDanger,
               ),

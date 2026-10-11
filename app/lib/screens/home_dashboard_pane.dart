@@ -19,6 +19,35 @@ class HomeDashboardPane extends StatelessWidget {
     return TacticalTheme.crimsonDanger;
   }
 
+  void _showScoreMeaningDialog(BuildContext context, int score, String label) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: TacticalTheme.bgSurface,
+        title: Row(
+          children: [
+            Icon(Icons.shield_outlined, color: TacticalTheme.amberPrimary),
+            const SizedBox(width: 8),
+            const Expanded(child: Text('What does this score mean?')),
+          ],
+        ),
+        content: Text(
+          'Your Security Score ($score% â€” $label) is calculated 100% offline inside the Rust KDBX4 core based on password entropy, uniqueness across items, compromised/breached advisories, Passkey/2FA readiness, and expiration timestamps.',
+          style: TextStyle(
+            fontSize: 13,
+            color: TacticalTheme.textSecondary,
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final score = controller.overallSecurityScore;
@@ -105,199 +134,209 @@ class HomeDashboardPane extends StatelessWidget {
       key: const ValueKey('enpass_home_dashboard'),
       color: TacticalTheme.bgDeepCarbon,
       child: ListView(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(24),
         children: [
-          // Top Security Score Banner (Enpass Home Header)
+          // Top Enpass `Home` Header + Pro Crown Badge (`Enpass_UNGNDpANfa.png`)
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 12,
+            runSpacing: 8,
+            children: [
+              Text(
+                'Home',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: TacticalTheme.textPrimary,
+                ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: TacticalTheme.amberDim,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: TacticalTheme.amberPrimary,
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.workspace_premium,
+                          size: 15,
+                          color: TacticalTheme.amberBright,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'VaultKeep Pro',
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: TacticalTheme.amberBright,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
+                    key: const ValueKey('home_button_view_all_items'),
+                    icon: Icon(
+                      Icons.list_alt,
+                      size: 16,
+                      color: TacticalTheme.amberPrimary,
+                    ),
+                    label: Text(
+                      'View All Items ($totalItems)',
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: TacticalTheme.amberPrimary,
+                      ),
+                    ),
+                    onPressed: () => controller.selectGroup(null),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+
+          // Enpass `Security Score` Card (`Enpass_UNGNDpANfa.png`)
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
               color: TacticalTheme.bgSurface,
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(8),
               border: Border.all(color: TacticalTheme.borderTech, width: 1.5),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Wrap(
-                  alignment: WrapAlignment.spaceBetween,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  spacing: 12,
-                  runSpacing: 8,
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: TacticalTheme.amberDim,
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(
-                              color: TacticalTheme.amberPrimary,
-                              width: 1,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Security Score',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: TacticalTheme.textPrimary,
                             ),
                           ),
-                          child: const Icon(
-                            Icons.shield_outlined,
-                            color: TacticalTheme.amberBright,
-                            size: 20,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Primary Vault Security Audit',
+                          const SizedBox(height: 4),
+                          InkWell(
+                            key: const ValueKey('home_button_score_meaning'),
+                            onTap: () => _showScoreMeaningDialog(
+                              context,
+                              score,
+                              label,
+                            ),
+                            child: Text(
+                              'What does this score mean?',
                               style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                                color: TacticalTheme.textPrimary,
+                                fontSize: 12,
+                                color: TacticalTheme.cyanTactical,
+                                decoration: TextDecoration.underline,
                               ),
                             ),
-                            Text(
-                              'Offline Zero-Knowledge Password Health & Breach Telemetry',
-                              style: TacticalTheme.monoStyle(
-                                fontSize: 11,
-                                color: TacticalTheme.textSecondary,
+                          ),
+                          const SizedBox(height: 18),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              value: (score / 100.0).clamp(0.0, 1.0),
+                              minHeight: 7,
+                              backgroundColor: TacticalTheme.bgDeepCarbon,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                scoreColor,
                               ),
                             ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    OutlinedButton.icon(
-                      key: const ValueKey('home_button_view_all_items'),
-                      icon: const Icon(
-                        Icons.list_alt,
-                        size: 16,
-                        color: TacticalTheme.amberPrimary,
+                          ),
+                          const SizedBox(height: 8),
+                          SegmentedAmberBar(
+                            fraction: score / 100.0,
+                            segments: 20,
+                            height: 6,
+                          ),
+                        ],
                       ),
-                      label: Text(
-                        'View All Items ($totalItems)',
-                        style: TacticalTheme.monoStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: TacticalTheme.amberPrimary,
-                        ),
-                      ),
-                      onPressed: () => controller.selectGroup(null),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                Wrap(
-                  alignment: WrapAlignment.spaceBetween,
-                  crossAxisAlignment: WrapCrossAlignment.end,
-                  spacing: 20,
-                  runSpacing: 14,
-                  children: [
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                      textBaseline: TextBaseline.alphabetic,
+                    const SizedBox(width: 24),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
                           '$score',
                           key: const ValueKey('home_security_score_value'),
                           style: TacticalTheme.monoStyle(
-                            fontSize: 44,
+                            fontSize: 42,
                             fontWeight: FontWeight.w900,
                             color: scoreColor,
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Overall Security Score',
-                              style: TacticalTheme.monoStyle(
-                                fontSize: 12,
-                                color: TacticalTheme.textSecondary,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 3,
-                              ),
-                              decoration: BoxDecoration(
-                                color: TacticalTheme.bgDeepCarbon,
-                                borderRadius: BorderRadius.circular(4),
-                                border: Border.all(color: scoreColor, width: 1),
-                              ),
-                              child: Text(
-                                label,
-                                key: const ValueKey(
-                                  'home_security_score_label',
-                                ),
-                                style: TacticalTheme.monoStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: scoreColor,
-                                ),
-                              ),
-                            ),
-                          ],
+                        const SizedBox(height: 2),
+                        Text(
+                          label,
+                          key: const ValueKey('home_security_score_label'),
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: scoreColor,
+                          ),
                         ),
                       ],
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 10,
-                      ),
-                      decoration: BoxDecoration(
-                        color: TacticalTheme.bgDeepCarbon,
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(
-                          color: TacticalTheme.borderTech,
-                          width: 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            '$totalItems',
-                            style: TacticalTheme.monoStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                              color: TacticalTheme.amberBright,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Total Items',
-                            style: TacticalTheme.monoStyle(
-                              fontSize: 12,
-                              color: TacticalTheme.textSecondary,
-                            ),
-                          ),
-                        ],
-                      ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 16),
-                SegmentedAmberBar(
-                  fraction: score / 100.0,
-                  segments: 20,
-                  height: 10,
+                Divider(color: TacticalTheme.borderSubtle, height: 1),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Text(
+                      '$totalItems',
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: TacticalTheme.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Total Items',
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 13,
+                        color: TacticalTheme.textSecondary,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 18),
 
-          // 8 Audit Summary Cards (2-column responsive grid)
+          // 8 Audit Summary Cards (3-column responsive grid on desktop matching Enpass_UNGNDpANfa.png)
           LayoutBuilder(
             builder: (context, constraints) {
-              final twoCols = constraints.maxWidth >= 520;
-              if (!twoCols) {
+              final cols = constraints.maxWidth >= 760
+                  ? 3
+                  : (constraints.maxWidth >= 480 ? 2 : 1);
+              if (cols == 1) {
                 return Column(
                   children: [
                     for (final c in cards) ...[
@@ -311,32 +350,28 @@ class HomeDashboardPane extends StatelessWidget {
                 );
               }
               final rows = <Widget>[];
-              for (var i = 0; i < cards.length; i += 2) {
-                rows.add(
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _AuditSummaryCard(
-                          spec: cards[i],
-                          onTap: () =>
-                              controller.selectCategory(cards[i].filter),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: i + 1 < cards.length
-                            ? _AuditSummaryCard(
-                                spec: cards[i + 1],
-                                onTap: () => controller.selectCategory(
-                                  cards[i + 1].filter,
-                                ),
-                              )
-                            : const SizedBox.shrink(),
-                      ),
-                    ],
-                  ),
-                );
-                if (i + 2 < cards.length) {
+              for (var i = 0; i < cards.length; i += cols) {
+                final rowChildren = <Widget>[];
+                for (var cIdx = 0; cIdx < cols; cIdx++) {
+                  if (cIdx > 0) {
+                    rowChildren.add(const SizedBox(width: 12));
+                  }
+                  final itemIdx = i + cIdx;
+                  rowChildren.add(
+                    Expanded(
+                      child: itemIdx < cards.length
+                          ? _AuditSummaryCard(
+                              spec: cards[itemIdx],
+                              onTap: () => controller.selectCategory(
+                                cards[itemIdx].filter,
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  );
+                }
+                rows.add(Row(children: rowChildren));
+                if (i + cols < cards.length) {
                   rows.add(const SizedBox(height: 12));
                 }
               }
@@ -383,12 +418,12 @@ class _AuditSummaryCard extends StatelessWidget {
     return InkWell(
       key: spec.key,
       onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: BorderRadius.circular(8),
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: TacticalTheme.bgSurface,
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(8),
           border: Border.all(color: TacticalTheme.borderTech, width: 1),
         ),
         child: Row(
@@ -398,13 +433,13 @@ class _AuditSummaryCard extends StatelessWidget {
               height: 38,
               decoration: BoxDecoration(
                 color: TacticalTheme.bgDeepCarbon,
-                borderRadius: BorderRadius.circular(6),
+                shape: BoxShape.circle,
                 border: Border.all(
-                  color: spec.accent.withValues(alpha: 0.55),
-                  width: 1,
+                  color: spec.accent.withValues(alpha: 0.65),
+                  width: 1.5,
                 ),
               ),
-              child: Icon(spec.icon, color: spec.accent, size: 20),
+              child: Icon(spec.icon, color: spec.accent, size: 19),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -412,30 +447,20 @@ class _AuditSummaryCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    spec.title,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: TacticalTheme.textPrimary,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
                     '${spec.count} ${spec.count == 1 ? "Item" : "Items"}',
                     style: TacticalTheme.monoStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: spec.accent,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      color: TacticalTheme.textPrimary,
                     ),
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    spec.subtitle,
-                    style: TacticalTheme.monoStyle(
-                      fontSize: 10,
-                      color: TacticalTheme.textMuted,
+                    spec.title,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: TacticalTheme.textSecondary,
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -443,10 +468,13 @@ class _AuditSummaryCard extends StatelessWidget {
                 ],
               ),
             ),
-            const Icon(
-              Icons.chevron_right,
-              size: 18,
-              color: TacticalTheme.textMuted,
+            Tooltip(
+              message: spec.subtitle,
+              child: Icon(
+                Icons.info_outline,
+                size: 16,
+                color: TacticalTheme.textMuted,
+              ),
             ),
           ],
         ),

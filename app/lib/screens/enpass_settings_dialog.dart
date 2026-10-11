@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -13,17 +14,20 @@ class EnpassSettingsDialog extends StatefulWidget {
     required this.controller,
     required this.onChangeMasterPassword,
     required this.onSyncVault,
+    this.initialTab = 0,
   });
 
   final VaultController controller;
   final VoidCallback onChangeMasterPassword;
   final VoidCallback onSyncVault;
+  final int initialTab;
 
   static Future<void> show(
     BuildContext context, {
     required VaultController controller,
     required VoidCallback onChangeMasterPassword,
     required VoidCallback onSyncVault,
+    int initialTab = 0,
   }) {
     return showDialog<void>(
       context: context,
@@ -31,6 +35,7 @@ class EnpassSettingsDialog extends StatefulWidget {
         controller: controller,
         onChangeMasterPassword: onChangeMasterPassword,
         onSyncVault: onSyncVault,
+        initialTab: initialTab,
       ),
     );
   }
@@ -40,14 +45,38 @@ class EnpassSettingsDialog extends StatefulWidget {
 }
 
 class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
-  int _selectedTab = 0;
+  late int _selectedTab = widget.initialTab.clamp(0, _tabs.length - 1);
   bool _selectingStorageForNewVault = false;
-  bool _openAtStartup = false;
-  bool _minimizeToTray = true;
-  bool _lockOnSystemSleep = true;
-  bool _lockOnSystemLock = true;
-  bool _lockOnWindowClose = false;
+  bool _autofillInBrowsers = true;
+  bool _fillAndSubmitAuto = false;
+  bool _showMenuOnFocus = true;
+  bool _askUnverifiedBrowser = true;
   bool _disableSslPinning = false;
+  bool _checkClipboard = true;
+  bool _autoCheckUpdates = true;
+  bool _checkForAlerts = true;
+  bool _enableLogs = false;
+  VaultInfo? _vaultInfo;
+  List<String> _backups = const [];
+
+  Future<bool> _promptConfigurePinDialog() async {
+    final pin = await showDialog<String>(
+      context: context,
+      builder: (_) => const _QuickPinSetupDialog(),
+    );
+    if (pin != null && pin.length >= 4) {
+      c.configureQuickPin(pin);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Quick Unlock PIN enabled for this vault.'),
+          ),
+        );
+      }
+      return true;
+    }
+    return false;
+  }
 
   static const List<({String label, IconData icon})> _tabs = [
     (label: 'General', icon: Icons.tune),
@@ -58,74 +87,107 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
     (label: 'Backup', icon: Icons.backup_outlined),
     (label: 'Wi-Fi Sync', icon: Icons.wifi_tethering),
     (label: 'Advanced', icon: Icons.build_outlined),
+    (label: 'About', icon: Icons.info_outline),
   ];
 
-  static const List<({String name, String subtitle, IconData icon})>
+  static const List<({String name, String subtitle, IconData icon, bool isCloud})>
       _storageProviders = [
     (
       name: 'OneDrive',
       subtitle: 'Microsoft OneDrive Cloud Sync',
       icon: Icons.cloud_outlined,
+      isCloud: true,
     ),
     (
       name: 'Google Drive',
       subtitle: 'Google Drive Encrypted Sync',
       icon: Icons.add_to_drive,
+      isCloud: true,
     ),
     (
       name: 'iCloud',
       subtitle: 'Apple iCloud Drive Vault',
       icon: Icons.cloud_circle_outlined,
+      isCloud: true,
     ),
     (
       name: 'Dropbox',
       subtitle: 'Dropbox App Folder Sync',
       icon: Icons.inventory_2_outlined,
+      isCloud: true,
     ),
     (
       name: 'Box',
       subtitle: 'Box Enterprise Cloud Storage',
       icon: Icons.all_inbox_outlined,
+      isCloud: true,
     ),
     (
       name: 'WebDAV',
       subtitle: 'Self-hosted WebDAV / OwnCloud',
       icon: Icons.dns_outlined,
+      isCloud: true,
     ),
     (
       name: 'NextCloud',
       subtitle: 'NextCloud Private Instance',
       icon: Icons.cloud_done_outlined,
+      isCloud: true,
     ),
     (
       name: 'Wi-Fi Sync',
       subtitle: 'Local LAN SRP-6a Encrypted Sync',
       icon: Icons.wifi_tethering,
+      isCloud: false,
     ),
     (
       name: 'Folder Sync',
       subtitle: 'Local or Network Folder Replica (.kdbx)',
       icon: Icons.folder_copy_outlined,
+      isCloud: false,
     ),
     (
       name: 'This PC',
       subtitle: 'Offline Local KDBX4 Vault on Disk',
       icon: Icons.computer_outlined,
+      isCloud: false,
     ),
   ];
 
   VaultController get c => widget.controller;
 
+  String get _defaultBackupDir =>
+      '${Directory.systemTemp.path}${Platform.pathSeparator}vaultkeep_backups';
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadVaultDiagnostics());
+  }
+
+  Future<void> _loadVaultDiagnostics() async {
+    try {
+      final info = await c.getVaultInfo();
+      final backups = await c.listBackups(_defaultBackupDir);
+      if (!mounted) return;
+      setState(() {
+        _vaultInfo = info;
+        _backups = backups;
+      });
+    } catch (_) {}
+  }
+
   Future<void> _triggerBackupNow() async {
     try {
-      final backupDir =
-          '${Directory.systemTemp.path}${Platform.pathSeparator}vaultkeep_backups';
-      final path = await c.createBackup(backupDir);
+      final path = await c.createBackup(_defaultBackupDir);
+      final backups = await c.listBackups(_defaultBackupDir);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Encrypted backup created: $path')),
       );
-      setState(() {});
+      setState(() {
+        _backups = backups;
+      });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -134,8 +196,165 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
     }
   }
 
+  Future<void> _restoreFromBackupSnapshot(String backupPath) async {
+    try {
+      await c.restoreBackup(backupPath, '');
+      await _loadVaultDiagnostics();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Vault restored from snapshot: $backupPath')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(VaultController.describe(e))),
+      );
+    }
+  }
+
+  Future<void> _confirmEraseEverything() async {
+    final masterCtrl = TextEditingController();
+    final confirmedMaster = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        key: const ValueKey('settings_erase_vault_confirm_dialog'),
+        title: const Text('Erase Everything?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'This permanently deletes the active encrypted KDBX4 vault file from disk and locks the session. Enter your Master Password to confirm:',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey('settings_erase_vault_password_field'),
+              controller: masterCtrl,
+              obscureText: true,
+              enableSuggestions: false,
+              autocorrect: false,
+              enableIMEPersonalizedLearning: false,
+              decoration: const InputDecoration(
+                labelText: 'Master Password',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('settings_erase_vault_confirm_button'),
+            style: FilledButton.styleFrom(
+              backgroundColor: TacticalTheme.crimsonDanger,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(masterCtrl.text),
+            child: const Text('Erase Vault'),
+          ),
+        ],
+      ),
+    );
+    masterCtrl.text = '';
+    masterCtrl.dispose();
+    if (confirmedMaster == null || confirmedMaster.isEmpty || !mounted) return;
+    try {
+      await c.eraseVault(confirmedMaster);
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(VaultController.describe(e))),
+      );
+    }
+  }
+
+
+  Widget _buildStorageTile(({String name, String subtitle, IconData icon, bool isCloud}) p) {
+    final isSelected = c.connectedStorageProvider == p.name;
+    return InkWell(
+      key: ValueKey('storage_provider_${p.name}'),
+      borderRadius: BorderRadius.circular(8),
+      onTap: () {
+        c.updateSettings(connectedStorageProvider: p.name);
+        setState(() => _selectingStorageForNewVault = false);
+        if (p.name == 'Folder Sync') {
+          Navigator.of(context).pop();
+          widget.onSyncVault();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Primary vault storage target set to ${p.name}.',
+              ),
+            ),
+          );
+        }
+      },
+      child: Container(
+        width: 108,
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        decoration: BoxDecoration(
+          color: TacticalTheme.bgSurface,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected
+                ? TacticalTheme.amberPrimary
+                : TacticalTheme.borderTech,
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: TacticalTheme.bgDeepCarbon,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: isSelected
+                      ? TacticalTheme.amberPrimary
+                      : TacticalTheme.borderSubtle,
+                ),
+              ),
+              child: Icon(
+                p.icon,
+                color: isSelected
+                    ? TacticalTheme.amberBright
+                    : TacticalTheme.cyanTactical,
+                size: 20,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              p.name,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: TacticalTheme.textPrimary,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildVaultsTab() {
     if (_selectingStorageForNewVault) {
+      final cloudProviders =
+          _storageProviders.where((p) => p.isCloud).toList();
+      final nonCloudProviders =
+          _storageProviders.where((p) => !p.isCloud).toList();
+
       return Column(
         key: const ValueKey('settings_vault_select_storage'),
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -149,7 +368,7 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                     setState(() => _selectingStorageForNewVault = false),
               ),
               const SizedBox(width: 6),
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Select Storage to Create or Restore Vault',
                   style: TextStyle(
@@ -161,56 +380,24 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Choose a cloud provider, local network Wi-Fi Sync server, or offline folder replica:',
-            style: TacticalTheme.monoStyle(
-              fontSize: 11,
-              color: TacticalTheme.textSecondary,
-            ),
+          const SizedBox(height: 14),
+          const _SectionHeader('CLOUD'),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              for (final p in cloudProviders) _buildStorageTile(p),
+            ],
           ),
-          const SizedBox(height: 12),
-          for (final p in _storageProviders)
-            Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                leading: Icon(p.icon, color: TacticalTheme.amberPrimary),
-                title: Text(
-                  p.name,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: TacticalTheme.textPrimary,
-                  ),
-                ),
-                subtitle: Text(
-                  p.subtitle,
-                  style: TacticalTheme.monoStyle(
-                    fontSize: 11,
-                    color: TacticalTheme.textSecondary,
-                  ),
-                ),
-                trailing: const Icon(
-                  Icons.chevron_right,
-                  color: TacticalTheme.textMuted,
-                ),
-                onTap: () {
-                  c.updateSettings(connectedStorageProvider: p.name);
-                  setState(() => _selectingStorageForNewVault = false);
-                  if (p.name == 'Folder Sync') {
-                    Navigator.of(context).pop();
-                    widget.onSyncVault();
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          'Primary vault storage target set to ${p.name}.',
-                        ),
-                      ),
-                    );
-                  }
-                },
-              ),
-            ),
+          const SizedBox(height: 20),
+          const _SectionHeader('NON-CLOUD'),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              for (final p in nonCloudProviders) _buildStorageTile(p),
+            ],
+          ),
         ],
       );
     }
@@ -218,8 +405,71 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // Top Vault Header (`Enpass_Phx22T1g3k.png`)
         Container(
           padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: TacticalTheme.bgSurface,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: TacticalTheme.borderTech, width: 1),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: TacticalTheme.amberDim,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: TacticalTheme.amberPrimary,
+                    width: 1,
+                  ),
+                ),
+                child: Icon(
+                  Icons.lock_person_outlined,
+                  color: TacticalTheme.amberBright,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Primary',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: TacticalTheme.textPrimary,
+                      ),
+                    ),
+                    Text(
+                      '${c.activeItems.length} Items',
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 11,
+                        color: TacticalTheme.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              FilledButton.icon(
+                key: const ValueKey('settings_button_add_new_vault'),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Add New Vault'),
+                onPressed: () =>
+                    setState(() => _selectingStorageForNewVault = true),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        // SYNC INFO Card (`Enpass_Phx22T1g3k.png`)
+        const _SectionHeader('SYNC INFO'),
+        Container(
+          padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: TacticalTheme.bgSurface,
             borderRadius: BorderRadius.circular(6),
@@ -230,40 +480,29 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
             children: [
               Row(
                 children: [
-                  Container(
-                    width: 38,
-                    height: 38,
-                    decoration: BoxDecoration(
-                      color: TacticalTheme.amberDim,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: TacticalTheme.amberPrimary,
-                        width: 1,
-                      ),
-                    ),
-                    child: const Icon(
-                      Icons.lock_person_outlined,
-                      color: TacticalTheme.amberBright,
-                    ),
+                  Icon(
+                    Icons.cloud_done_outlined,
+                    color: TacticalTheme.cyanTactical,
+                    size: 20,
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'Primary',
+                        Text(
+                          'Synchronizing with ${c.connectedStorageProvider}',
                           style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w800,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
                             color: TacticalTheme.textPrimary,
                           ),
                         ),
                         Text(
-                          '${c.activeItems.length} Items • ${c.connectedStorageProvider}',
+                          'Last Synchronized: Today • Last Attempt: Just now',
                           style: TacticalTheme.monoStyle(
                             fontSize: 11,
-                            color: TacticalTheme.cyanTactical,
+                            color: TacticalTheme.textSecondary,
                           ),
                         ),
                       ],
@@ -271,7 +510,7 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -283,6 +522,85 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                       Navigator.of(context).pop();
                       widget.onSyncVault();
                     },
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.cloud_queue, size: 15),
+                    label: const Text('Change Storage Provider'),
+                    onPressed: () =>
+                        setState(() => _selectingStorageForNewVault = true),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        // VAULT INFO Card (`Enpass_Phx22T1g3k.png`)
+        const _SectionHeader('VAULT INFO'),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: TacticalTheme.bgSurface,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: TacticalTheme.borderTech, width: 1),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Vault Location',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: TacticalTheme.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Flexible(
+                    child: Text(
+                      _vaultInfo?.path.isNotEmpty == true
+                          ? _vaultInfo!.path
+                          : 'Encrypted KDBX4 Container',
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 11,
+                        color: TacticalTheme.textPrimary,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              Divider(height: 20, color: TacticalTheme.borderSubtle),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Master Password',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: TacticalTheme.textPrimary,
+                          ),
+                        ),
+                        Text(
+                          _vaultInfo != null
+                              ? 'Argon2id (${_vaultInfo!.kdfMemoryMib} MiB, ${_vaultInfo!.kdfIterations} iters, ${_vaultInfo!.kdfParallelism} lanes) • ChaCha20-Poly1305'
+                              : 'Argon2id Key Derivation • ChaCha20-Poly1305',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: TacticalTheme.textMuted,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   OutlinedButton.icon(
                     icon: const Icon(Icons.vpn_key_outlined, size: 15),
@@ -297,47 +615,199 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
             ],
           ),
         ),
-        const SizedBox(height: 16),
-        FilledButton.icon(
-          key: const ValueKey('settings_button_add_new_vault'),
-          icon: const Icon(Icons.add, size: 16),
-          label: const Text('Add New Vault / Connect Storage'),
-          onPressed: () =>
-              setState(() => _selectingStorageForNewVault = true),
-        ),
       ],
+    );
+  }
+
+  Widget _buildThemeOptionCard({
+    required String label,
+    required IconData icon,
+    required Color previewBg,
+    required Color previewSurface,
+  }) {
+    final selected = c.themeModeSetting == label;
+    return Expanded(
+      child: InkWell(
+        key: ValueKey('settings_theme_$label'),
+        borderRadius: BorderRadius.circular(8),
+        onTap: () {
+          c.updateSettings(themeModeSetting: label);
+          setState(() {});
+        },
+        child: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: TacticalTheme.bgSurface,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: selected
+                  ? TacticalTheme.amberPrimary
+                  : TacticalTheme.borderTech,
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            children: [
+              Container(
+                height: 44,
+                decoration: BoxDecoration(
+                  color: previewBg,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: TacticalTheme.borderSubtle),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 24,
+                      decoration: BoxDecoration(
+                        color: previewSurface,
+                        borderRadius: const BorderRadius.horizontal(
+                          left: Radius.circular(3),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Center(
+                        child: Icon(
+                          icon,
+                          size: 16,
+                          color: selected
+                              ? TacticalTheme.amberBright
+                              : TacticalTheme.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (selected) ...[
+                    Icon(
+                      Icons.check_circle,
+                      size: 14,
+                      color: TacticalTheme.amberPrimary,
+                    ),
+                    const SizedBox(width: 4),
+                  ],
+                  Flexible(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight:
+                            selected ? FontWeight.w700 : FontWeight.w500,
+                        color: selected
+                            ? TacticalTheme.amberBright
+                            : TacticalTheme.textSecondary,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
   Widget _buildTabContent() {
     switch (_selectedTab) {
-      case 0: // General
+      case 0: // General (`Enpass_s93PhrrNLy.png`)
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _SectionHeader('RUN'),
             SwitchListTile(
+              key: const ValueKey('settings_switch_open_at_startup'),
               title: const Text('Open Automatically at System Startup'),
               subtitle: const Text(
                 'Launch VaultKeep minimized in background on boot',
               ),
-              value: _openAtStartup,
+              value: c.openAtStartup,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (v) => setState(() => _openAtStartup = v),
+              onChanged: (v) {
+                c.updateSettings(openAtStartup: v);
+                setState(() {});
+              },
             ),
             SwitchListTile(
+              key: const ValueKey('settings_switch_minimize_to_tray'),
               title: const Text('Minimize App to System Tray'),
               subtitle: const Text(
                 'Keep quick-access icon in the system notification area',
               ),
-              value: _minimizeToTray,
+              value: c.minimizeToTray,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (v) => setState(() => _minimizeToTray = v),
+              onChanged: (v) {
+                c.updateSettings(minimizeToTray: v);
+                setState(() {});
+              },
+            ),
+            SwitchListTile(
+              key: const ValueKey('settings_switch_hide_dock_icon'),
+              title: const Text('Hide Dock Icon When Main Window is Closed'),
+              subtitle: const Text(
+                'Minimize to hidden icons / tray instead of exiting when closed',
+              ),
+              value: c.hideDockIcon,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) {
+                c.updateSettings(hideDockIcon: v);
+                setState(() {});
+              },
+            ),
+            const Divider(height: 24),
+            const _SectionHeader('BEHAVIOR'),
+            SwitchListTile(
+              title: const Text('Search in All Items'),
+              subtitle: const Text(
+                'Include all categories when searching from sidebar filters',
+              ),
+              value: c.searchInAllItems,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) {
+                c.updateSettings(searchInAllItems: v);
+                setState(() {});
+              },
+            ),
+            SwitchListTile(
+              title: const Text('Always run Assistant in docked mode'),
+              value: c.dockedAssistant,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) {
+                c.updateSettings(dockedAssistant: v);
+                setState(() {});
+              },
+            ),
+            ListTile(
+              title: const Text('System-wide Hotkey'),
+              subtitle: const Text('Summon VaultKeep Mini Assistant anywhere'),
+              trailing: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: TacticalTheme.bgDeepCarbon,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: TacticalTheme.borderTech),
+                ),
+                child: Text(
+                  r'Ctrl + Alt + \',
+                  style: TacticalTheme.monoStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: TacticalTheme.amberBright,
+                  ),
+                ),
+              ),
             ),
             const Divider(height: 24),
             const _SectionHeader('LANGUAGE'),
             ListTile(
-              title: const Text('Language'),
+              title: const Text('Choose Language'),
               subtitle: Text(
                 'System Default (English)',
                 style: TacticalTheme.monoStyle(
@@ -349,38 +819,75 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
           ],
         );
 
-      case 1: // Vaults
+      case 1: // Vaults (`Enpass_Phx22T1g3k.png` & `Enpass_lOdDigGaYv.png`)
         return _buildVaultsTab();
 
-      case 2: // Security
+      case 2: // Security (`Enpass_Klr1jH4sgQ.png`)
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _SectionHeader('QUICK UNLOCK'),
             SwitchListTile(
+              key: const ValueKey('settings_switch_windows_hello'),
               title: const Text('Windows Hello'),
               subtitle: const Text(
                 'Unlock Primary vault using OS TPM / Biometric verification',
               ),
               value: c.windowsHelloEnabled,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (v) {
-                c.updateSettings(windowsHelloEnabled: v);
-                setState(() {});
+              onChanged: (v) async {
+                if (v) {
+                  await c.enableWindowsHello();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Windows Hello Quick Unlock enabled for this vault.',
+                        ),
+                      ),
+                    );
+                  }
+                } else {
+                  c.disableWindowsHello();
+                }
+                if (mounted) setState(() {});
               },
             ),
             SwitchListTile(
+              key: const ValueKey('settings_switch_quick_pin'),
               title: const Text('PIN'),
-              subtitle: const Text(
-                'Unlock quickly when app is already running in memory',
+              subtitle: Text(
+                c.hasQuickPinConfigured
+                    ? 'Quick Unlock PIN configured (supports numbers or characters)'
+                    : 'Unlock quickly using numeric digits or characters when locked',
               ),
               value: c.quickPinEnabled,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (v) {
-                c.updateSettings(quickPinEnabled: v);
-                setState(() {});
+              onChanged: (v) async {
+                if (v) {
+                  await _promptConfigurePinDialog();
+                } else {
+                  c.disableQuickPin();
+                }
+                if (mounted) setState(() {});
               },
             ),
+            if (c.quickPinEnabled)
+              Padding(
+                padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    key: const ValueKey('settings_button_change_pin'),
+                    icon: const Icon(Icons.pin_outlined, size: 15),
+                    label: const Text('Change Quick Unlock PIN'),
+                    onPressed: () async {
+                      await _promptConfigurePinDialog();
+                      if (mounted) setState(() {});
+                    },
+                  ),
+                ),
+              ),
             const Divider(height: 24),
             const _SectionHeader('MASTER PASSWORD'),
             ListTile(
@@ -399,7 +906,7 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
             const Divider(height: 24),
             const _SectionHeader('AUTOLOCK WHEN'),
             ListTile(
-              leading: const Icon(
+              leading: Icon(
                 Icons.timer_outlined,
                 color: TacticalTheme.amberPrimary,
               ),
@@ -414,27 +921,45 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
               ),
             ),
             SwitchListTile(
-              title: const Text('System Sleeps'),
-              value: _lockOnSystemSleep,
+              title: const Text('Main Window is Closed'),
+              value: c.lockOnWindowClose,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (v) => setState(() => _lockOnSystemSleep = v),
+              onChanged: (v) {
+                c.updateSettings(lockOnWindowClose: v);
+                setState(() {});
+              },
+            ),
+            SwitchListTile(
+              title: const Text('System Sleeps'),
+              value: c.lockOnSystemSleep,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) {
+                c.updateSettings(lockOnSystemSleep: v);
+                setState(() {});
+              },
             ),
             SwitchListTile(
               title: const Text('System Locks'),
-              value: _lockOnSystemLock,
+              value: c.lockOnSystemLock,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (v) => setState(() => _lockOnSystemLock = v),
+              onChanged: (v) {
+                c.updateSettings(lockOnSystemLock: v);
+                setState(() {});
+              },
             ),
             SwitchListTile(
-              title: const Text('Main Window is Closed'),
-              value: _lockOnWindowClose,
+              title: const Text('Fast User Switching'),
+              value: c.lockOnFastUserSwitch,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (v) => setState(() => _lockOnWindowClose = v),
+              onChanged: (v) {
+                c.updateSettings(lockOnFastUserSwitch: v);
+                setState(() {});
+              },
             ),
             const Divider(height: 24),
             const _SectionHeader('CLIPBOARD'),
             ListTile(
-              title: const Text('Auto-Clear Clipboard'),
+              title: const Text('Clear Clipboard After'),
               subtitle: const Text(
                 'Automatically scrubs copied passwords and TOTP codes',
               ),
@@ -450,19 +975,47 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
           ],
         );
 
-      case 3: // Customize
+      case 3: // Customize (`Enpass_67kaj69rme.png`)
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _SectionHeader('APPEARANCE'),
-            ListTile(
-              title: const Text('Choose Theme'),
-              trailing: Text(
-                'Dark (Tactical Carbon)',
-                style: TacticalTheme.monoStyle(
-                  fontSize: 12,
-                  color: TacticalTheme.amberBright,
+            Row(
+              children: [
+                _buildThemeOptionCard(
+                  label: 'Follow System',
+                  icon: Icons.brightness_auto_outlined,
+                  previewBg: c.systemIsLight
+                      ? const Color(0xFFF8FAFC)
+                      : const Color(0xFF10121A),
+                  previewSurface: c.systemIsLight
+                      ? const Color(0xFFE2E8F0)
+                      : const Color(0xFF1E2233),
                 ),
+                const SizedBox(width: 10),
+                _buildThemeOptionCard(
+                  label: 'Light',
+                  icon: Icons.light_mode_outlined,
+                  previewBg: const Color(0xFFF8FAFC),
+                  previewSurface: const Color(0xFFE2E8F0),
+                ),
+                const SizedBox(width: 10),
+                _buildThemeOptionCard(
+                  label: 'Dark',
+                  icon: Icons.dark_mode_outlined,
+                  previewBg: const Color(0xFF090A0F),
+                  previewSurface: const Color(0xFF10121A),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              c.themeModeSetting == 'Follow System'
+                  ? 'Following OS theme (${c.systemIsLight ? 'Light' : 'Dark'}) and system accent color'
+                  : 'Active Theme: ${c.themeModeSetting} Mode',
+              style: TacticalTheme.monoStyle(
+                fontSize: 11,
+                color: TacticalTheme.textSecondary,
               ),
             ),
             const Divider(height: 24),
@@ -490,7 +1043,11 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
               },
             ),
             SwitchListTile(
+              key: const ValueKey('settings_switch_old_passwords_audit'),
               title: const Text('Include Old Passwords in Audit'),
+              subtitle: const Text(
+                'Show 3-6 Months, 6-12 Months, and 1-3 Years filters in Sidebar Audit',
+              ),
               value: c.includeOldPasswordsInAudit,
               activeThumbColor: TacticalTheme.amberPrimary,
               onChanged: (v) {
@@ -512,6 +1069,25 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
             ),
             const Divider(height: 24),
             const _SectionHeader('CATEGORIES & TEMPLATES'),
+            ListTile(
+              leading: Icon(
+                Icons.category_outlined,
+                color: TacticalTheme.amberPrimary,
+              ),
+              title: const Text('Manage Categories'),
+              subtitle: Text('${kEnpassCategories.length} active categories'),
+              trailing: const Icon(Icons.chevron_right),
+            ),
+            ListTile(
+              leading: Icon(
+                Icons.dashboard_customize_outlined,
+                color: TacticalTheme.cyanTactical,
+              ),
+              title: const Text('Add Custom Templates'),
+              subtitle: const Text('Create custom item templates & sections'),
+              trailing: const Icon(Icons.chevron_right),
+            ),
+            const SizedBox(height: 8),
             Wrap(
               spacing: 6,
               runSpacing: 6,
@@ -525,7 +1101,7 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
           ],
         );
 
-      case 4: // Autofill
+      case 4: // Autofill (`Enpass_7BxQCDo7er.png`)
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -535,21 +1111,21 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
               subtitle: const Text(
                 'Communicate with browser extension over authenticated localhost channel',
               ),
-              value: true,
+              value: _autofillInBrowsers,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (_) {},
+              onChanged: (v) => setState(() => _autofillInBrowsers = v),
             ),
             SwitchListTile(
-              title: const Text('Verify Browser Code Signature'),
-              subtitle: const Text(
-                'Validate Authenticode / OS code signature of connecting browsers',
-              ),
-              value: c.verifyBrowserSignature,
+              title: const Text('Fill and Submit Automatically'),
+              value: _fillAndSubmitAuto,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (v) {
-                c.updateSettings(verifyBrowserSignature: v);
-                setState(() {});
-              },
+              onChanged: (v) => setState(() => _fillAndSubmitAuto = v),
+            ),
+            SwitchListTile(
+              title: const Text('Show Autofill Menu on Field Focus'),
+              value: _showMenuOnFocus,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) => setState(() => _showMenuOnFocus = v),
             ),
             ListTile(
               title: const Text('Keyboard Shortcut'),
@@ -570,10 +1146,40 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                 ),
               ),
             ),
+            const Divider(height: 24),
+            const _SectionHeader('BROWSER AUTHENTICATION'),
+            SwitchListTile(
+              title: const Text('Verify Browser Code Signature'),
+              subtitle: const Text(
+                'Validate Authenticode / OS code signature of connecting browsers',
+              ),
+              value: c.verifyBrowserSignature,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) {
+                c.updateSettings(verifyBrowserSignature: v);
+                setState(() {});
+              },
+            ),
+            SwitchListTile(
+              title: const Text(
+                'Ask for Confirmation When Unverified Browser Connects',
+              ),
+              value: _askUnverifiedBrowser,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) => setState(() => _askUnverifiedBrowser = v),
+            ),
+            ListTile(
+              leading: Icon(
+                Icons.verified_user_outlined,
+                color: TacticalTheme.emeraldReady,
+              ),
+              title: const Text('Authorized Browsers'),
+              subtitle: const Text('Chrome, Edge, Firefox, Brave (Verified)'),
+            ),
           ],
         );
 
-      case 5: // Backup
+      case 5: // Backup (`Enpass_1o1M4IhFW9.png`)
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -590,6 +1196,22 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                 setState(() {});
               },
             ),
+            ListTile(
+              leading: Icon(
+                Icons.folder_outlined,
+                color: TacticalTheme.amberPrimary,
+              ),
+              title: const Text('Location'),
+              subtitle: Text(
+                _defaultBackupDir,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 11,
+                  color: TacticalTheme.textSecondary,
+                ),
+              ),
+            ),
+            const Divider(height: 24),
+            const _SectionHeader('PREVIOUS BACKUPS'),
             if (c.lastBackupPath != null)
               Padding(
                 padding: const EdgeInsets.symmetric(
@@ -603,7 +1225,65 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                     color: TacticalTheme.emeraldReady,
                   ),
                 ),
+              )
+            else if (_backups.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 6,
+                ),
+                child: Text(
+                  'No automatic backups recorded in this session yet.',
+                  style: TacticalTheme.monoStyle(
+                    fontSize: 11,
+                    color: TacticalTheme.textMuted,
+                  ),
+                ),
               ),
+            if (_backups.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              for (var i = 0; i < _backups.take(5).length; i++)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: TacticalTheme.bgSurface,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: TacticalTheme.borderTech),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.archive_outlined,
+                        size: 16,
+                        color: TacticalTheme.cyanTactical,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _backups[i].split(RegExp(r'[/\\]')).last,
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 11,
+                            color: TacticalTheme.textPrimary,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      TextButton.icon(
+                        key: ValueKey('settings_restore_backup_$i'),
+                        icon: const Icon(Icons.restore, size: 14),
+                        label: const Text('Restore'),
+                        onPressed: () =>
+                            _restoreFromBackupSnapshot(_backups[i]),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
             const SizedBox(height: 12),
             Wrap(
               spacing: 10,
@@ -628,23 +1308,46 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
           ],
         );
 
-      case 6: // Wi-Fi Sync
+      case 6: // Wi-Fi Sync (`Enpass_H1MKK11Thm.png`)
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _SectionHeader('WI-FI SYNC SERVER'),
             Container(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
                 color: TacticalTheme.bgSurface,
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: TacticalTheme.borderTech),
               ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  const Text(
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      color: TacticalTheme.bgDeepCarbon,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: c.wifiSyncServerRunning
+                            ? TacticalTheme.emeraldReady
+                            : TacticalTheme.amberPrimary,
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.wifi_tethering,
+                      size: 28,
+                      color: c.wifiSyncServerRunning
+                          ? TacticalTheme.emeraldReady
+                          : TacticalTheme.amberBright,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
                     'Host a local Wi-Fi Sync Server to synchronize your Primary vault with other devices on your local network without cloud storage.',
+                    textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 13,
                       color: TacticalTheme.textSecondary,
@@ -652,7 +1355,7 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                   ),
                   const SizedBox(height: 14),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(
                         'Vault: ${c.wifiSyncVaultName}',
@@ -662,6 +1365,7 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                           color: TacticalTheme.textPrimary,
                         ),
                       ),
+                      const SizedBox(width: 12),
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 8,
@@ -691,7 +1395,7 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 16),
                   FilledButton.icon(
                     key: const ValueKey('settings_button_wifi_sync_toggle'),
                     icon: Icon(
@@ -716,11 +1420,44 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
           ],
         );
 
-      case 7: // Advanced
-      default:
+      case 7: // Advanced (`Enpass_fCwTlOyXdP.png` & `Enpass_T10Ysz9Nij.png`)
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            const _SectionHeader('DATA LOCATION'),
+            ListTile(
+              leading: Icon(
+                Icons.folder_special_outlined,
+                color: TacticalTheme.amberPrimary,
+              ),
+              title: const Text('Vaults & Backups Directory'),
+              subtitle: const Text('Default Local KDBX4 Workspace'),
+            ),
+            const Divider(height: 24),
+            const _SectionHeader('NETWORK'),
+            SwitchListTile(
+              title: const Text('Disable SSL Certificate Pinning'),
+              value: _disableSslPinning,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) => setState(() => _disableSslPinning = v),
+            ),
+            const ListTile(
+              title: Text('Proxy Configuration'),
+              subtitle: Text('Use System Proxy Settings'),
+            ),
+            const Divider(height: 24),
+            const _SectionHeader('SHARING'),
+            ListTile(
+              leading: Icon(
+                Icons.key_outlined,
+                color: TacticalTheme.cyanTactical,
+              ),
+              title: const Text('Pre-Shared Keys (PSK)'),
+              subtitle: const Text(
+                'Define symmetric keys for encrypted item export & sharing',
+              ),
+            ),
+            const Divider(height: 24),
             const _SectionHeader('SECURITY'),
             SwitchListTile(
               title: const Text('Check for Compromised Passwords'),
@@ -734,15 +1471,97 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                 setState(() {});
               },
             ),
-            const Divider(height: 24),
-            const _SectionHeader('NETWORK'),
             SwitchListTile(
-              title: const Text('Disable SSL Certificate Pinning'),
-              value: _disableSslPinning,
+              title: const Text('Check Clipboard for Sensitive Data'),
+              value: _checkClipboard,
               activeThumbColor: TacticalTheme.amberPrimary,
-              onChanged: (v) => setState(() => _disableSslPinning = v),
+              onChanged: (v) => setState(() => _checkClipboard = v),
             ),
             const Divider(height: 24),
+            const _SectionHeader('UPDATES & LOGS'),
+            SwitchListTile(
+              title: const Text('Automatically Check for Updates'),
+              value: _autoCheckUpdates,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) => setState(() => _autoCheckUpdates = v),
+            ),
+            SwitchListTile(
+              title: const Text('Check for Website Breach Alerts'),
+              value: _checkForAlerts,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) => setState(() => _checkForAlerts = v),
+            ),
+            SwitchListTile(
+              title: const Text('Enable Diagnostic Logs (Zero Secrets)'),
+              value: _enableLogs,
+              activeThumbColor: TacticalTheme.amberPrimary,
+              onChanged: (v) => setState(() => _enableLogs = v),
+            ),
+            const Divider(height: 24),
+            const _SectionHeader('RESET'),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                key: const ValueKey('settings_button_erase_everything'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: TacticalTheme.crimsonDanger,
+                  side: BorderSide(color: TacticalTheme.crimsonDanger),
+                ),
+                icon: const Icon(Icons.delete_forever_outlined, size: 16),
+                label: const Text('Erase Everything'),
+                onPressed: _confirmEraseEverything,
+              ),
+            ),
+          ],
+        );
+
+      case 8: // About (`Screenshots/aas.txt`)
+      default:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _SectionHeader('ABOUT VAULTKEEP'),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: TacticalTheme.bgSurface,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: TacticalTheme.borderTech),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.shield,
+                    color: TacticalTheme.amberPrimary,
+                    size: 32,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'VaultKeep Pro — Zero-Knowledge Password Manager',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
+                            color: TacticalTheme.textPrimary,
+                          ),
+                        ),
+                        Text(
+                          'KDBX 4.0/4.1 • Argon2id • ChaCha20-Poly1305 • FIDO2 ES256',
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 11,
+                            color: TacticalTheme.cyanTactical,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
             const _SectionHeader('OPEN SOURCE SOFTWARE & CRYPTO STACK'),
             Container(
               padding: const EdgeInsets.all(12),
@@ -759,7 +1578,8 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                 'Enpass Reference Open Source Credits (Screenshots/aas.txt):\n'
                 '• Zxcvbn (Password Strength) • ZXing (QR TOTP) • pugixml\n'
                 '• OpenSSL & Libsodium • SingleApplication & QHotkey\n'
-                '• WebSocket++ & Asio (Wi-Fi Sync) • RapidJSON & jsoncpp',
+                '• WebSocket++ & Asio (Wi-Fi Sync) • RapidJSON & jsoncpp\n'
+                '• Gumbo HTML5 Parser • libqrencode • breakpad',
                 style: TacticalTheme.monoStyle(
                   fontSize: 11,
                   color: TacticalTheme.textSecondary,
@@ -773,180 +1593,266 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      key: const ValueKey('enpass_settings_dialog'),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 740, maxHeight: 620),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final isWide = constraints.maxWidth >= 560;
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Top Header
-                Container(
-                  height: 48,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  decoration: const BoxDecoration(
-                    color: TacticalTheme.bgSurface,
-                    border: Border(
-                      bottom: BorderSide(
-                        color: TacticalTheme.borderTech,
-                        width: 1,
-                      ),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.settings_outlined,
-                        color: TacticalTheme.amberPrimary,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 8),
-                      const Expanded(
-                        child: Text(
-                          'Settings',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w800,
-                            color: TacticalTheme.textPrimary,
+    return ListenableBuilder(
+      listenable: c,
+      builder: (context, _) {
+        return Dialog(
+          key: const ValueKey('enpass_settings_dialog'),
+          backgroundColor: TacticalTheme.bgPanel,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760, maxHeight: 640),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isWide = constraints.maxWidth >= 560;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Top Header
+                    Container(
+                      height: 48,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(
+                        color: TacticalTheme.bgSurface,
+                        border: Border(
+                          bottom: BorderSide(
+                            color: TacticalTheme.borderTech,
+                            width: 1,
                           ),
                         ),
                       ),
-                      IconButton(
-                        tooltip: 'Close Settings',
-                        icon: const Icon(Icons.close, size: 18),
-                        onPressed: () => Navigator.of(context).pop(),
-                      ),
-                    ],
-                  ),
-                ),
-
-                if (!isWide)
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    child: Row(
-                      children: [
-                        for (var i = 0; i < _tabs.length; i++) ...[
-                          ChoiceChip(
-                            label: Text(_tabs[i].label),
-                            selected: _selectedTab == i,
-                            onSelected: (_) => setState(() {
-                              _selectedTab = i;
-                              _selectingStorageForNewVault = false;
-                            }),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.settings_outlined,
+                            color: TacticalTheme.amberPrimary,
+                            size: 20,
                           ),
-                          const SizedBox(width: 6),
-                        ],
-                      ],
-                    ),
-                  ),
-
-                Expanded(
-                  child: isWide
-                      ? Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            // Left Settings Navigation Rail
-                            Container(
-                              width: 185,
-                              decoration: const BoxDecoration(
-                                color: TacticalTheme.bgDeepCarbon,
-                                border: Border(
-                                  right: BorderSide(
-                                    color: TacticalTheme.borderTech,
-                                    width: 1,
-                                  ),
-                                ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Settings',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w800,
+                                color: TacticalTheme.textPrimary,
                               ),
-                              child: ListView.builder(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 8,
-                                ),
-                                itemCount: _tabs.length,
-                                itemBuilder: (context, i) {
-                                  final selected = _selectedTab == i;
-                                  return InkWell(
-                                    key: ValueKey(
-                                      'settings_tab_${_tabs[i].label}',
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Close Settings',
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () => Navigator.of(context).pop(),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    if (!isWide)
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        child: Row(
+                          children: [
+                            for (var i = 0; i < _tabs.length; i++) ...[
+                              ChoiceChip(
+                                label: Text(_tabs[i].label),
+                                selected: _selectedTab == i,
+                                onSelected: (_) => setState(() {
+                                  _selectedTab = i;
+                                  _selectingStorageForNewVault = false;
+                                }),
+                              ),
+                              const SizedBox(width: 6),
+                            ],
+                          ],
+                        ),
+                      ),
+
+                    Expanded(
+                      child: isWide
+                          ? Row(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                // Left Settings Navigation Rail (`Enpass_s93PhrrNLy.png`)
+                                Container(
+                                  width: 195,
+                                  decoration: BoxDecoration(
+                                    color: TacticalTheme.bgDeepCarbon,
+                                    border: Border(
+                                      right: BorderSide(
+                                        color: TacticalTheme.borderTech,
+                                        width: 1,
+                                      ),
                                     ),
-                                    onTap: () => setState(() {
-                                      _selectedTab = i;
-                                      _selectingStorageForNewVault = false;
-                                    }),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 14,
-                                        vertical: 11,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: selected
-                                            ? TacticalTheme.bgElevated
-                                            : Colors.transparent,
-                                        border: Border(
-                                          left: BorderSide(
-                                            color: selected
-                                                ? TacticalTheme.amberPrimary
-                                                : Colors.transparent,
-                                            width: 3,
-                                          ),
-                                        ),
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          Icon(
-                                            _tabs[i].icon,
-                                            size: 17,
-                                            color: selected
-                                                ? TacticalTheme.amberPrimary
-                                                : TacticalTheme.cyanTactical,
-                                          ),
-                                          const SizedBox(width: 10),
-                                          Expanded(
-                                            child: Text(
-                                              _tabs[i].label,
-                                              style: TextStyle(
-                                                fontSize: 13,
-                                                fontWeight: selected
-                                                    ? FontWeight.w700
-                                                    : FontWeight.w500,
-                                                color: selected
-                                                    ? TacticalTheme.textPrimary
-                                                    : TacticalTheme
-                                                        .textSecondary,
-                                              ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      // Top Enpass License / Account Badge (`Enpass_s93PhrrNLy.png`)
+                                      Container(
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: TacticalTheme.bgSurface,
+                                          border: Border(
+                                            bottom: BorderSide(
+                                              color: TacticalTheme.borderSubtle,
+                                              width: 1,
                                             ),
                                           ),
-                                        ],
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Container(
+                                              width: 30,
+                                              height: 30,
+                                              decoration: BoxDecoration(
+                                                color: TacticalTheme.amberDim,
+                                                shape: BoxShape.circle,
+                                                border: Border.all(
+                                                  color: TacticalTheme
+                                                      .amberPrimary,
+                                                ),
+                                              ),
+                                              child: Icon(
+                                                Icons.workspace_premium,
+                                                size: 16,
+                                                color:
+                                                    TacticalTheme.amberBright,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    'VaultKeep Pro',
+                                                    style: TextStyle(
+                                                      fontSize: 12,
+                                                      fontWeight:
+                                                          FontWeight.w800,
+                                                      color: TacticalTheme
+                                                          .textPrimary,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    'Registered License',
+                                                    style:
+                                                        TacticalTheme.monoStyle(
+                                                          fontSize: 10,
+                                                          color: TacticalTheme
+                                                              .amberBright,
+                                                        ),
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
-                                    ),
-                                  );
-                                },
-                              ),
+                                      Expanded(
+                                        child: ListView.builder(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 6,
+                                          ),
+                                          itemCount: _tabs.length,
+                                          itemBuilder: (context, i) {
+                                            final selected =
+                                                _selectedTab == i;
+                                            return InkWell(
+                                              key: ValueKey(
+                                                'settings_tab_${_tabs[i].label}',
+                                              ),
+                                              onTap: () => setState(() {
+                                                _selectedTab = i;
+                                                _selectingStorageForNewVault =
+                                                    false;
+                                              }),
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 14,
+                                                      vertical: 10,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color: selected
+                                                      ? TacticalTheme.bgElevated
+                                                      : Colors.transparent,
+                                                  border: Border(
+                                                    left: BorderSide(
+                                                      color: selected
+                                                          ? TacticalTheme
+                                                              .amberPrimary
+                                                          : Colors.transparent,
+                                                      width: 3,
+                                                    ),
+                                                  ),
+                                                ),
+                                                child: Row(
+                                                  children: [
+                                                    Icon(
+                                                      _tabs[i].icon,
+                                                      size: 17,
+                                                      color: selected
+                                                          ? TacticalTheme
+                                                              .amberPrimary
+                                                          : TacticalTheme
+                                                              .cyanTactical,
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    Expanded(
+                                                      child: Text(
+                                                        _tabs[i].label,
+                                                        style: TextStyle(
+                                                          fontSize: 13,
+                                                          fontWeight: selected
+                                                              ? FontWeight.w700
+                                                              : FontWeight.w500,
+                                                          color: selected
+                                                              ? TacticalTheme
+                                                                  .textPrimary
+                                                              : TacticalTheme
+                                                                  .textSecondary,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Expanded(
+                                  child: SingleChildScrollView(
+                                    padding: const EdgeInsets.all(20),
+                                    child: _buildTabContent(),
+                                  ),
+                                ),
+                              ],
+                            )
+                          : SingleChildScrollView(
+                              padding: const EdgeInsets.all(16),
+                              child: _buildTabContent(),
                             ),
-                            Expanded(
-                              child: SingleChildScrollView(
-                                padding: const EdgeInsets.all(20),
-                                child: _buildTabContent(),
-                              ),
-                            ),
-                          ],
-                        )
-                      : SingleChildScrollView(
-                          padding: const EdgeInsets.all(16),
-                          child: _buildTabContent(),
-                        ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -971,3 +1877,130 @@ class _SectionHeader extends StatelessWidget {
     );
   }
 }
+
+class _QuickPinSetupDialog extends StatefulWidget {
+  const _QuickPinSetupDialog();
+
+  @override
+  State<_QuickPinSetupDialog> createState() => _QuickPinSetupDialogState();
+}
+
+class _QuickPinSetupDialogState extends State<_QuickPinSetupDialog> {
+  final _pinCtrl = TextEditingController();
+  final _confirmCtrl = TextEditingController();
+  bool _showPin = false;
+  String? _pinError;
+
+  @override
+  void dispose() {
+    _pinCtrl.text = '';
+    _confirmCtrl.text = '';
+    _pinCtrl.dispose();
+    _confirmCtrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final pin = _pinCtrl.text;
+    final confirm = _confirmCtrl.text;
+    if (pin.length < 4) {
+      setState(() => _pinError = 'PIN must be at least 4 characters.');
+      return;
+    }
+    if (pin != confirm) {
+      setState(() => _pinError = 'PIN entries do not match.');
+      return;
+    }
+    Navigator.of(context).pop(pin);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      key: const ValueKey('settings_quick_pin_dialog'),
+      title: Row(
+        children: [
+          Icon(Icons.pin_outlined, color: TacticalTheme.amberPrimary),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text('Set Quick Unlock PIN'),
+          ),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Enter a Quick Unlock PIN using numbers (e.g. 123456) or characters (e.g. Pass#99) to quickly unlock VaultKeep when locked.',
+              style: TextStyle(
+                fontSize: 12,
+                color: TacticalTheme.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              key: const ValueKey('settings_pin_input'),
+              controller: _pinCtrl,
+              autofocus: true,
+              obscureText: !_showPin,
+              enableSuggestions: false,
+              autocorrect: false,
+              enableIMEPersonalizedLearning: false,
+              style: TacticalTheme.monoStyle(fontSize: 13),
+              decoration: InputDecoration(
+                labelText: 'New PIN (numeric or characters, min 4)',
+                suffixIcon: IconButton(
+                  tooltip: _showPin ? 'Hide PIN' : 'Show PIN',
+                  icon: Icon(
+                    _showPin ? Icons.visibility_off : Icons.visibility,
+                    size: 18,
+                    color: TacticalTheme.textSecondary,
+                  ),
+                  onPressed: () => setState(() => _showPin = !_showPin),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey('settings_pin_confirm'),
+              controller: _confirmCtrl,
+              obscureText: !_showPin,
+              enableSuggestions: false,
+              autocorrect: false,
+              enableIMEPersonalizedLearning: false,
+              style: TacticalTheme.monoStyle(fontSize: 13),
+              onSubmitted: (_) => _submit(),
+              decoration: const InputDecoration(
+                labelText: 'Confirm PIN',
+              ),
+            ),
+            if (_pinError != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _pinError!,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 11,
+                  color: TacticalTheme.crimsonDanger,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(null),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const ValueKey('settings_pin_save_button'),
+          onPressed: _submit,
+          child: const Text('Set PIN'),
+        ),
+      ],
+    );
+  }
+}
+
