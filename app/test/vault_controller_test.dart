@@ -1256,6 +1256,122 @@ void main() {
     expect(c.hideSensitive, isTrue);
     c.dispose();
   });
+
+  test('Wi-Fi Sync: Same-Account auto-sync and 6-digit Pairing Code sync (happy path + adversarial rejections)', () async {
+    final deviceA = VaultController(FakeBackend(), deviceName: 'LAPTOP-ALPHA');
+    final deviceB = VaultController(FakeBackend(), deviceName: 'PHONE-BETA');
+    final intruder = VaultController(FakeBackend(), deviceName: 'INTRUDER-NODE');
+
+    await deviceA.create('a.kdbx', _master);
+    await deviceB.create('b.kdbx', _master);
+    await intruder.create('c.kdbx', _master);
+
+    await deviceA.save(
+      null,
+      const EntryDraft(
+        title: 'GitHub',
+        username: 'octocat',
+        password: 'OctoPassword!2026',
+        url: 'https://github.com',
+        notes: 'Alpha item',
+      ),
+    );
+    await deviceB.save(
+      null,
+      const EntryDraft(
+        title: 'AWS Console',
+        username: 'cloud-admin',
+        password: 'AwsPassword!2026',
+        url: 'https://aws.amazon.com',
+        notes: 'Beta item',
+      ),
+    );
+
+    // 1. Mode 1: Same-Account Wi-Fi Sync
+    deviceA.completeOnboardingActivation(
+      usageType: 'Personal',
+      email: 'killfury212@gmail.com',
+    );
+    deviceB.completeOnboardingActivation(
+      usageType: 'Personal',
+      email: 'KILLFURY212@GMAIL.COM', // case-insensitive normalization check
+    );
+    intruder.completeOnboardingActivation(
+      usageType: 'Personal',
+      email: 'attacker@evil.org',
+    );
+
+    deviceA.startWifiSyncServer(
+      customAddress: '192.168.1.10:52138',
+      fixedCodeForTesting: '861303',
+    );
+
+    expect(deviceB.discoverSameAccountWifiPeers().length, 1);
+    expect(intruder.discoverSameAccountWifiPeers(), isEmpty);
+
+    // Adversarial: different account is rejected from Same-Account sync
+    await expectLater(
+      () => intruder.syncWithSameAccountPeer(),
+      throwsA(isA<StateError>()),
+    );
+    expect(intruder.items, isEmpty);
+
+    // Happy path: Same-Account sync bidirectionally merges passwords between deviceA & deviceB
+    final mergedSameAccount = await deviceB.syncWithSameAccountPeer();
+    expect(mergedSameAccount, greaterThanOrEqualTo(2));
+    expect(deviceA.items.map((i) => i.title).toSet(), {'GitHub', 'AWS Console'});
+    expect(deviceB.items.map((i) => i.title).toSet(), {'GitHub', 'AWS Console'});
+
+    // 2. Mode 2: 6-Digit Pairing Code Wi-Fi Sync on the Same Wi-Fi
+    final deviceD = VaultController(FakeBackend(), deviceName: 'TABLET-DELTA');
+    await deviceD.create('d.kdbx', _master);
+    await deviceD.save(
+      null,
+      const EntryDraft(
+        title: 'ProtonMail',
+        username: 'vaultuser',
+        password: 'ProtonPassword!2026',
+        url: 'https://proton.me',
+        notes: 'Delta item',
+      ),
+    );
+
+    // Adversarial: Wrong 6-digit pairing code is rejected
+    await expectLater(
+      () => deviceD.syncWithWifiCode('000000'),
+      throwsA(isA<StateError>()),
+    );
+    expect(deviceD.items.map((i) => i.title).toList(), ['ProtonMail']);
+
+    // Adversarial: Expired 6-digit pairing code is rejected
+    deviceA.regenerateWifiSyncPairingCode(
+      fixedCodeForTesting: '123456',
+      lifetime: const Duration(seconds: -5),
+    );
+    await expectLater(
+      () => deviceD.syncWithWifiCode('123456'),
+      throwsA(isA<StateError>()),
+    );
+
+    // Happy path: Valid 6-digit pairing code (with space formatting '861 303') syncs bidirectionally
+    deviceA.regenerateWifiSyncPairingCode(fixedCodeForTesting: '861303');
+    final mergedByCode = await deviceD.syncWithWifiCode('861 303');
+    expect(mergedByCode, greaterThanOrEqualTo(3));
+    expect(
+      deviceD.items.map((i) => i.title).toSet(),
+      {'GitHub', 'AWS Console', 'ProtonMail'},
+    );
+    expect(
+      deviceA.items.map((i) => i.title).toSet(),
+      {'GitHub', 'AWS Console', 'ProtonMail'},
+    );
+    expect(deviceD.wifiSyncPairedDevices, isNotEmpty);
+
+    deviceA.dispose();
+    deviceB.dispose();
+    intruder.dispose();
+    deviceD.dispose();
+  });
 }
 
 

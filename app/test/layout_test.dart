@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vaultkeep/backend.dart';
@@ -483,7 +484,16 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 1. Click '+ New Item v' top button -> opens category popup menu and New Credential Entry form
+    // Verify right New Credential Entry column is hidden initially when vault is empty,
+    // and top-bar icons are moved to left column with a single merged Settings icon.
+    expect(find.text('New Credential Entry'), findsNothing);
+    expect(find.byTooltip('Settings'), findsOneWidget);
+    expect(find.byKey(const ValueKey('vault_button_password_generator')), findsOneWidget);
+    expect(find.byKey(const ValueKey('vault_button_autofill_query')), findsOneWidget);
+    expect(find.byKey(const ValueKey('vault_button_rotate_password')), findsOneWidget);
+    expect(find.byKey(const ValueKey('vault_button_settings')), findsOneWidget);
+
+    // 1. Click '+ New Item v' top button -> opens category popup menu and New Credential Entry semi-window
     await tester.tap(find.byKey(const ValueKey('vault_button_new_item_top')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('new_item_category_Credit Card')), findsOneWidget);
@@ -492,7 +502,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('new_item_category_Credit Card')));
     await tester.pumpAndSettle();
     expect(find.text('New Credential Entry'), findsOneWidget);
+    expect(find.byKey(const ValueKey('entry_button_cancel')), findsOneWidget);
     expect(find.text('Credit Card'), findsWidgets);
+
+    // Clicking Cancel in the semi-window dismisses it immediately
+    await tester.tap(find.byKey(const ValueKey('entry_button_cancel')));
+    await tester.pumpAndSettle();
+    expect(find.text('New Credential Entry'), findsNothing);
 
     // 2. Open Settings -> General: toggle Startup, Minimize to Tray, Hide Dock Icon
     await tester.tap(find.byKey(const ValueKey('vault_button_settings')));
@@ -733,9 +749,20 @@ void main() {
     await tester.pumpAndSettle();
     expect(controller.recentEntryIds, isEmpty);
 
-    // 6. Open Help menu -> verify Support Forum, Blog, X(Twitter), Report a Bug, Write to Us, Check for Updates, About
+    // 6. Instant dropdown switching: open Tools, then click File directly -> Tools closes immediately & File opens, then click Help -> File closes & Help opens
+    await tester.tap(find.byKey(const ValueKey('top_menu_tools')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('menu_item_tools_lock')), findsOneWidget);
+    expect(find.byKey(const ValueKey('menu_item_file_backup')), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('top_menu_file')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('menu_item_tools_lock')), findsNothing);
+    expect(find.byKey(const ValueKey('menu_item_file_backup')), findsOneWidget);
+
     await tester.tap(find.byKey(const ValueKey('top_menu_help')));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('menu_item_file_backup')), findsNothing);
     expect(find.byKey(const ValueKey('menu_item_help_support_forum')), findsOneWidget);
     expect(find.byKey(const ValueKey('menu_item_help_blog')), findsOneWidget);
     expect(find.byKey(const ValueKey('menu_item_help_twitter')), findsOneWidget);
@@ -749,6 +776,316 @@ void main() {
     expect(find.byKey(const ValueKey('top_menu_check_updates_dialog')), findsOneWidget);
     await tester.tap(find.text('OK'));
     await tester.pumpAndSettle();
+
+    // 7. Mouse hover over top menu button, dropdown item, and sidebar option renders slight border and text glow
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+
+    // Hover over 'File' top menu button
+    await mouse.moveTo(tester.getCenter(find.byKey(const ValueKey('top_menu_file'))));
+    await tester.pumpAndSettle();
+    final fileText = tester.widget<Text>(
+      find.descendant(
+        of: find.byKey(const ValueKey('top_menu_file')),
+        matching: find.text('File'),
+      ),
+    );
+    expect(fileText.style?.shadows, isNotNull);
+    expect(fileText.style?.shadows, isNotEmpty);
+
+    // Hover over 'Favorites' sidebar option
+    await mouse.moveTo(tester.getCenter(find.byKey(const ValueKey('sidebar_favorites'))));
+    await tester.pumpAndSettle();
+    final favText = tester.widget<Text>(
+      find.descendant(
+        of: find.byKey(const ValueKey('sidebar_favorites')),
+        matching: find.text('Favorites'),
+      ),
+    );
+    expect(favText.style?.shadows, isNotNull);
+    expect(favText.style?.shadows, isNotEmpty);
+
+    await controller.lock();
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Settings -> Wi-Fi Sync UI supports Same-Account sync and 6-Digit Pairing Code sync across devices', (tester) async {
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.reset());
+
+    // Set up a peer device on the same Wi-Fi hosting a vault with a Stripe credential
+    final peerBackend = FakeBackend();
+    final peerController = VaultController(
+      peerBackend,
+      deviceName: 'MACBOOK-PEER',
+    );
+    addTearDown(peerController.dispose);
+    await peerController.create('peer.kdbx', 'correct-horse-battery');
+    await peerController.save(
+      null,
+      const EntryDraft(
+        title: 'Stripe Dashboard',
+        username: 'finance-ops',
+        password: 'StripePassword!2026',
+        url: 'https://dashboard.stripe.com',
+        notes: 'Peer item',
+      ),
+    );
+    peerController.completeOnboardingActivation(
+      usageType: 'Personal',
+      email: 'killfury212@gmail.com',
+    );
+    peerController.startWifiSyncServer(
+      customAddress: '192.168.1.44:52138',
+      fixedCodeForTesting: '861303',
+    );
+
+    // Unlock primary device with a GitHub credential
+    await backend.unlock('path', 'correct-horse-battery');
+    controller.status = VaultStatus.unlocked;
+    await controller.save(
+      null,
+      const EntryDraft(
+        title: 'GitHub',
+        username: 'octocat',
+        password: 'GitHubPassword!2026',
+        url: 'https://github.com',
+        notes: 'Local item',
+      ),
+    );
+    controller.completeOnboardingActivation(
+      usageType: 'Personal',
+      email: 'killfury212@gmail.com',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VaultScreen(controller: controller),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Open Settings -> Wi-Fi Sync tab
+    await tester.tap(find.byKey(const ValueKey('vault_button_settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('settings_tab_Wi-Fi Sync')));
+    await tester.pumpAndSettle();
+
+    // Start local Wi-Fi Sync server and verify 6-digit pairing code and access passphrase appear
+    await tester.tap(find.byKey(const ValueKey('settings_button_wifi_sync_toggle')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('wifi_sync_server_pairing_code')), findsOneWidget);
+    expect(find.byKey(const ValueKey('wifi_sync_server_access_passphrase')), findsOneWidget);
+
+    // 1. Test wrong 6-digit code shows Verify Server error banner
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('wifi_sync_input_pairing_code')),
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('wifi_sync_input_pairing_code')),
+      '999999',
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('wifi_sync_button_connect_with_code')),
+    );
+    await tester.tap(find.byKey(const ValueKey('wifi_sync_button_connect_with_code')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('wifi_sync_status_banner')),
+    );
+    expect(find.byKey(const ValueKey('wifi_sync_status_banner')), findsOneWidget);
+    expect(find.textContaining('Verify Server failed'), findsOneWidget);
+
+    // 2. Test valid 6-digit code ('861 303') syncs Stripe Dashboard from peer
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('wifi_sync_input_pairing_code')),
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('wifi_sync_input_pairing_code')),
+      '861 303',
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('wifi_sync_button_connect_with_code')),
+    );
+    await tester.tap(find.byKey(const ValueKey('wifi_sync_button_connect_with_code')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Wi-Fi Sync via code complete'), findsOneWidget);
+    expect(controller.items.any((i) => i.title == 'Stripe Dashboard'), isTrue);
+    expect(peerController.items.any((i) => i.title == 'GitHub'), isTrue);
+
+    // 3. Add another item on peer and sync via Same-Account button
+    await peerController.save(
+      null,
+      const EntryDraft(
+        title: 'Cloudflare Zero Trust',
+        username: 'netadmin',
+        password: 'CloudflarePassword!2026',
+        url: 'https://one.dash.cloudflare.com',
+        notes: 'Same account item',
+      ),
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('wifi_sync_button_same_account_sync')),
+    );
+    await tester.tap(find.byKey(const ValueKey('wifi_sync_button_same_account_sync')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Same-Account Wi-Fi Sync complete'), findsOneWidget);
+    expect(controller.items.any((i) => i.title == 'Cloudflare Zero Trust'), isTrue);
+
+    await tester.tap(find.byTooltip('Close Settings'));
+    await tester.pumpAndSettle();
+
+    await controller.lock();
+    await peerController.lock();
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'EntryScreen: Pre-present fields and sections can be freely removed, re-added, and stay removed after save',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await backend.unlock('path', 'correct-horse-battery');
+    controller.status = VaultStatus.unlocked;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryScreen(
+          controller: controller,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Verify pre-present fields exist initially
+    expect(find.byKey(const ValueKey('entry_field_username')), findsOneWidget);
+    expect(find.byKey(const ValueKey('entry_field_email')), findsOneWidget);
+    expect(find.byKey(const ValueKey('entry_field_password')), findsOneWidget);
+    expect(find.byKey(const ValueKey('entry_field_phone')), findsOneWidget);
+    expect(find.byKey(const ValueKey('entry_field_otp')), findsOneWidget);
+
+    // 1. Remove pre-present 'Username' field via direct remove button
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('remove_builtin_field_username')),
+    );
+    await tester.tap(find.byKey(const ValueKey('remove_builtin_field_username')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('entry_field_username')), findsNothing);
+    // Quick-restore chip appears for removed 'Username' field
+    expect(find.byKey(const ValueKey('restore_builtin_field_username')), findsOneWidget);
+
+    // 2. Remove pre-present 'Phone number' field via Field Options (...) -> Delete Field
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('field_options_Phone')),
+    );
+    await tester.tap(find.byKey(const ValueKey('field_options_Phone')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('field_options_delete')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('field_options_delete')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('entry_field_phone')), findsNothing);
+    expect(find.byKey(const ValueKey('restore_builtin_field_phone')), findsOneWidget);
+
+    // 3. Re-add 'Username' via quick-restore chip, then remove 'E-mail'
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('restore_builtin_field_username')),
+    );
+    await tester.tap(find.byKey(const ValueKey('restore_builtin_field_username')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('entry_field_username')), findsOneWidget);
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('remove_builtin_field_email')),
+    );
+    await tester.tap(find.byKey(const ValueKey('remove_builtin_field_email')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('entry_field_email')), findsNothing);
+
+    // 4. Add a custom field via inline 'Add Field' button, then verify it can also be removed
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('entry_inline_add_field_button')),
+    );
+    await tester.tap(find.byKey(const ValueKey('entry_inline_add_field_button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('field_options_name')),
+      'SSH Fingerprint',
+    );
+    await tester.tap(find.byKey(const ValueKey('field_options_save')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('remove_custom_field_SSH Fingerprint')),
+      findsOneWidget,
+    );
+
+    // 5. Fill Title & Password, save the entry, and verify removed fields stay removed when re-opened
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('entry_field_title')),
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('entry_field_title')),
+      'Minimalist Entry',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('entry_field_username')),
+      'minimal_user',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('entry_field_password')),
+      'StrongPass#99',
+    );
+    ScaffoldMessenger.of(tester.element(find.byType(EntryScreen)))
+        .clearSnackBars();
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('entry_button_save')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('entry_button_save')));
+    await tester.pumpAndSettle();
+
+    final savedItem = controller.items.firstWhere(
+      (i) => i.title == 'Minimalist Entry',
+    );
+    final savedEntry = await controller.loadEntry(savedItem.id);
+    expect(savedEntry.sections.contains('__removed_field__:email'), isTrue);
+    expect(savedEntry.sections.contains('__removed_field__:phone'), isTrue);
+
+    // Re-open the saved item in EntryScreen and confirm 'email' and 'phone' remain removed
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryScreen(
+          controller: controller,
+          entryId: savedItem.id,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('entry_field_username')), findsOneWidget);
+    expect(find.byKey(const ValueKey('entry_field_email')), findsNothing);
+    expect(find.byKey(const ValueKey('entry_field_phone')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('remove_custom_field_SSH Fingerprint')),
+      findsOneWidget,
+    );
+
+    // Remove the custom field via its direct remove button
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('remove_custom_field_SSH Fingerprint')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('remove_custom_field_SSH Fingerprint')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('remove_custom_field_SSH Fingerprint')),
+      findsNothing,
+    );
 
     await controller.lock();
     await tester.pumpWidget(const SizedBox());
