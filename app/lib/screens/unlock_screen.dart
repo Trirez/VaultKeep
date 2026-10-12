@@ -709,6 +709,15 @@ class _UnlockScreenState extends State<UnlockScreen> {
         ),
       ),
       (
+        keyName: 'wifisync',
+        label: 'Wi-Fi Sync',
+        icon: Icon(
+          Icons.wifi_tethering,
+          size: 20,
+          color: TacticalTheme.onboardingSelectedBlue,
+        ),
+      ),
+      (
         keyName: 'local',
         label: 'This Device',
         icon: Icon(

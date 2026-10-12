@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../backend.dart';
+import '../clipboard_guard.dart';
 import '../theme.dart';
 import '../vault_controller.dart';
 
@@ -46,6 +47,8 @@ class EnpassSettingsDialog extends StatefulWidget {
 
 class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
   late int _selectedTab = widget.initialTab.clamp(0, _tabs.length - 1);
+  int? _hoveredTab;
+  String? _hoveredProvider;
   bool _selectingStorageForNewVault = false;
   bool _autofillInBrowsers = true;
   bool _fillAndSubmitAuto = false;
@@ -58,6 +61,22 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
   bool _enableLogs = false;
   VaultInfo? _vaultInfo;
   List<String> _backups = const [];
+  final _wifiCodeCtrl = TextEditingController();
+  final _wifiAddressCtrl = TextEditingController();
+  final _wifiAccessPassCtrl = TextEditingController();
+  String? _wifiSyncStatusBanner;
+  bool _wifiSyncIsError = false;
+
+  @override
+  void dispose() {
+    _wifiCodeCtrl.text = '';
+    _wifiAddressCtrl.text = '';
+    _wifiAccessPassCtrl.text = '';
+    _wifiCodeCtrl.dispose();
+    _wifiAddressCtrl.dispose();
+    _wifiAccessPassCtrl.dispose();
+    super.dispose();
+  }
 
   Future<bool> _promptConfigurePinDialog() async {
     final pin = await showDialog<String>(
@@ -275,12 +294,25 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
 
   Widget _buildStorageTile(({String name, String subtitle, IconData icon, bool isCloud}) p) {
     final isSelected = c.connectedStorageProvider == p.name;
+    final isHovered = _hoveredProvider == p.name;
     return InkWell(
       key: ValueKey('storage_provider_${p.name}'),
       borderRadius: BorderRadius.circular(8),
+      onHover: (v) => setState(() {
+        if (v) {
+          _hoveredProvider = p.name;
+        } else if (_hoveredProvider == p.name) {
+          _hoveredProvider = null;
+        }
+      }),
       onTap: () {
         c.updateSettings(connectedStorageProvider: p.name);
-        setState(() => _selectingStorageForNewVault = false);
+        setState(() {
+          _selectingStorageForNewVault = false;
+          if (p.name == 'Wi-Fi Sync') {
+            _selectedTab = 6;
+          }
+        });
         if (p.name == 'Folder Sync') {
           Navigator.of(context).pop();
           widget.onSyncVault();
@@ -298,14 +330,15 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
         width: 108,
         padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
         decoration: BoxDecoration(
-          color: TacticalTheme.bgSurface,
+          color: isHovered ? TacticalTheme.bgHover : TacticalTheme.bgSurface,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-            color: isSelected
+            color: (isSelected || isHovered)
                 ? TacticalTheme.amberPrimary
                 : TacticalTheme.borderTech,
             width: isSelected ? 1.5 : 1,
           ),
+          boxShadow: isHovered ? TacticalTheme.borderGlow : null,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -317,14 +350,14 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                 color: TacticalTheme.bgDeepCarbon,
                 shape: BoxShape.circle,
                 border: Border.all(
-                  color: isSelected
+                  color: (isSelected || isHovered)
                       ? TacticalTheme.amberPrimary
                       : TacticalTheme.borderSubtle,
                 ),
               ),
               child: Icon(
                 p.icon,
-                color: isSelected
+                color: (isSelected || isHovered)
                     ? TacticalTheme.amberBright
                     : TacticalTheme.cyanTactical,
                 size: 20,
@@ -336,7 +369,10 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: TacticalTheme.textPrimary,
+                color: isHovered
+                    ? TacticalTheme.amberBright
+                    : TacticalTheme.textPrimary,
+                shadows: isHovered ? TacticalTheme.textGlow : null,
               ),
               textAlign: TextAlign.center,
               maxLines: 1,
@@ -1309,12 +1345,17 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
         );
 
       case 6: // Wi-Fi Sync (`Enpass_H1MKK11Thm.png`)
+        final allPeers = c.discoverWifiSyncPeers();
+        final sameAccountPeers = c.discoverSameAccountWifiPeers();
+        final statusLabel = !c.wifiSyncServerRunning
+            ? 'STOPPED'
+            : (c.wifiSyncServerPaused ? 'PAUSED' : 'RUNNING');
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _SectionHeader('WI-FI SYNC SERVER'),
             Container(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: TacticalTheme.bgSurface,
                 borderRadius: BorderRadius.circular(8),
@@ -1324,8 +1365,8 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Container(
-                    width: 56,
-                    height: 56,
+                    width: 52,
+                    height: 52,
                     decoration: BoxDecoration(
                       color: TacticalTheme.bgDeepCarbon,
                       shape: BoxShape.circle,
@@ -1338,24 +1379,27 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                     ),
                     child: Icon(
                       Icons.wifi_tethering,
-                      size: 28,
+                      size: 26,
                       color: c.wifiSyncServerRunning
                           ? TacticalTheme.emeraldReady
                           : TacticalTheme.amberBright,
                     ),
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 12),
                   Text(
-                    'Host a local Wi-Fi Sync Server to synchronize your Primary vault with other devices on your local network without cloud storage.',
+                    'Synchronize your vaults with other devices on the same local Wi-Fi network via Same Account or a 6-digit verification code.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      fontSize: 13,
+                      fontSize: 12,
                       color: TacticalTheme.textSecondary,
                     ),
                   ),
-                  const SizedBox(height: 14),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 6,
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       Text(
                         'Vault: ${c.wifiSyncVaultName}',
@@ -1365,7 +1409,13 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                           color: TacticalTheme.textPrimary,
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      Text(
+                        'Server: ${c.wifiSyncServerName} (${c.wifiSyncServerAddress})',
+                        style: TacticalTheme.monoStyle(
+                          fontSize: 11,
+                          color: TacticalTheme.cyanTactical,
+                        ),
+                      ),
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 8,
@@ -1383,7 +1433,7 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                           ),
                         ),
                         child: Text(
-                          c.wifiSyncServerRunning ? 'RUNNING' : 'STOPPED',
+                          statusLabel,
                           style: TacticalTheme.monoStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.bold,
@@ -1395,25 +1445,446 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    key: const ValueKey('settings_button_wifi_sync_toggle'),
-                    icon: Icon(
-                      c.wifiSyncServerRunning ? Icons.stop : Icons.play_arrow,
-                      size: 16,
-                    ),
-                    label: Text(
-                      c.wifiSyncServerRunning
-                          ? 'Stop Wi-Fi Sync'
-                          : 'Start Wi-Fi Sync',
-                    ),
-                    onPressed: () {
-                      c.updateSettings(
-                        wifiSyncServerRunning: !c.wifiSyncServerRunning,
-                      );
-                      setState(() {});
-                    },
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      FilledButton.icon(
+                        key: const ValueKey('settings_button_wifi_sync_toggle'),
+                        icon: Icon(
+                          c.wifiSyncServerRunning
+                              ? Icons.stop
+                              : Icons.play_arrow,
+                          size: 16,
+                        ),
+                        label: Text(
+                          c.wifiSyncServerRunning
+                              ? 'Stop Wi-Fi Sync'
+                              : 'Start Wi-Fi Sync',
+                        ),
+                        onPressed: () {
+                          c.updateSettings(
+                            wifiSyncServerRunning: !c.wifiSyncServerRunning,
+                          );
+                          setState(() {});
+                        },
+                      ),
+                      if (c.wifiSyncServerRunning)
+                        OutlinedButton.icon(
+                          key: const ValueKey(
+                            'settings_button_wifi_sync_pause',
+                          ),
+                          icon: Icon(
+                            c.wifiSyncServerPaused
+                                ? Icons.play_arrow_outlined
+                                : Icons.pause_outlined,
+                            size: 16,
+                          ),
+                          label: Text(
+                            c.wifiSyncServerPaused ? 'Resume' : 'Pause',
+                          ),
+                          onPressed: () {
+                            c.pauseWifiSyncServer();
+                            setState(() {});
+                          },
+                        ),
+                    ],
                   ),
+                  if (c.wifiSyncServerRunning) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: TacticalTheme.bgDeepCarbon,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: TacticalTheme.borderTech),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            'PAIRING CODE & ACCESS PASSWORD (SAME WI-FI)',
+                            style: TacticalTheme.monoStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: TacticalTheme.amberPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 8,
+                            alignment: WrapAlignment.spaceBetween,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(
+                                '6-Digit Verification Code:',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: TacticalTheme.textSecondary,
+                                ),
+                              ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: TacticalTheme.bgSurface,
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(
+                                        color: TacticalTheme.amberPrimary,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      c.wifiSyncFormattedPairingCode,
+                                      key: const ValueKey(
+                                        'wifi_sync_server_pairing_code',
+                                      ),
+                                      style: TacticalTheme.monoStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w800,
+                                        color: TacticalTheme.amberBright,
+                                        letterSpacing: 1.5,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  IconButton(
+                                    key: const ValueKey(
+                                      'wifi_sync_button_regenerate_code',
+                                    ),
+                                    tooltip: 'Regenerate 6-digit pairing code',
+                                    icon: Icon(
+                                      Icons.refresh,
+                                      size: 16,
+                                      color: TacticalTheme.cyanTactical,
+                                    ),
+                                    onPressed: () {
+                                      c.regenerateWifiSyncPairingCode();
+                                      setState(() {});
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 8,
+                            alignment: WrapAlignment.spaceBetween,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(
+                                'Access Password:',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: TacticalTheme.textSecondary,
+                                ),
+                              ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      c.wifiSyncAccessPassphrase,
+                                      key: const ValueKey(
+                                        'wifi_sync_server_access_passphrase',
+                                      ),
+                                      style: TacticalTheme.monoStyle(
+                                        fontSize: 11,
+                                        color: TacticalTheme.cyanTactical,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  IconButton(
+                                    key: const ValueKey(
+                                      'wifi_sync_button_copy_passphrase',
+                                    ),
+                                    tooltip: 'Copy Wi-Fi Sync Access Password',
+                                    icon: Icon(
+                                      Icons.copy_outlined,
+                                      size: 16,
+                                      color: TacticalTheme.amberPrimary,
+                                    ),
+                                    onPressed: () async {
+                                      await ClipboardGuard.copySecret(
+                                        c.wifiSyncAccessPassphrase,
+                                      );
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Wi-Fi Sync Access Password copied. Clears in 15 seconds.',
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            const _SectionHeader('1. SAME-ACCOUNT WI-FI SYNC'),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: TacticalTheme.bgSurface,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: TacticalTheme.borderTech),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'When two devices on the same Wi-Fi are activated with the same account, they automatically recognize each other and sync passwords.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: TacticalTheme.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.verified_user_outlined,
+                        size: 16,
+                        color: c.onboardingActivatedEmail != null
+                            ? TacticalTheme.emeraldReady
+                            : TacticalTheme.textMuted,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          c.onboardingActivatedEmail != null
+                              ? 'Account: ${c.onboardingActivatedEmail} (${sameAccountPeers.length} same-account peer(s) on Wi-Fi)'
+                              : 'Account: Not activated (use 6-digit code below or activate email)',
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 11,
+                            color: TacticalTheme.textPrimary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.icon(
+                      key: const ValueKey(
+                        'wifi_sync_button_same_account_sync',
+                      ),
+                      icon: const Icon(Icons.sync, size: 16),
+                      label: const Text('Sync with Same-Account Device'),
+                      onPressed: () async {
+                        try {
+                          final count = await c.syncWithSameAccountPeer();
+                          if (!mounted) return;
+                          setState(() {
+                            _wifiSyncIsError = false;
+                            _wifiSyncStatusBanner =
+                                'Same-Account Wi-Fi Sync complete ($count item(s) updated).';
+                          });
+                        } catch (e) {
+                          if (!mounted) return;
+                          setState(() {
+                            _wifiSyncIsError = true;
+                            _wifiSyncStatusBanner = VaultController.describe(e);
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            const _SectionHeader('2. CONNECT & SYNC USING CODE ON SAME WI-FI'),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: TacticalTheme.bgSurface,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: TacticalTheme.borderTech),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Enter the 6-digit verification code displayed on the other device on the same Wi-Fi network to pair and sync passwords:',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: TacticalTheme.textSecondary,
+                    ),
+                  ),
+                  if (allPeers.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        for (final p in allPeers)
+                          ActionChip(
+                            key: ValueKey('wifi_sync_peer_${p.address}'),
+                            avatar: Icon(
+                              Icons.computer,
+                              size: 14,
+                              color: TacticalTheme.cyanTactical,
+                            ),
+                            label: Text(
+                              '${p.deviceName} (${p.address})',
+                              style: TacticalTheme.monoStyle(fontSize: 11),
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                _wifiAddressCtrl.text = p.address;
+                              });
+                            },
+                          ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  TextField(
+                    key: const ValueKey('wifi_sync_input_pairing_code'),
+                    controller: _wifiCodeCtrl,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    enableIMEPersonalizedLearning: false,
+                    style: TacticalTheme.monoStyle(
+                      fontSize: 13,
+                      letterSpacing: 1.2,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: '6-Digit Wi-Fi Pairing Code (e.g. 861 303)',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const ValueKey('wifi_sync_input_server_address'),
+                    controller: _wifiAddressCtrl,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    enableIMEPersonalizedLearning: false,
+                    style: TacticalTheme.monoStyle(fontSize: 12),
+                    decoration: const InputDecoration(
+                      labelText:
+                          'Server Address IP:Port (optional, auto-detected on LAN)',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const ValueKey('wifi_sync_input_access_passphrase'),
+                    controller: _wifiAccessPassCtrl,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    enableIMEPersonalizedLearning: false,
+                    style: TacticalTheme.monoStyle(fontSize: 12),
+                    decoration: const InputDecoration(
+                      labelText: 'Vault Access Password (optional)',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.icon(
+                      key: const ValueKey(
+                        'wifi_sync_button_connect_with_code',
+                      ),
+                      icon: const Icon(Icons.phonelink_lock_outlined, size: 16),
+                      label: const Text('Connect & Sync with Code'),
+                      onPressed: () async {
+                        try {
+                          final count = await c.syncWithWifiCode(
+                            _wifiCodeCtrl.text,
+                            serverAddress: _wifiAddressCtrl.text,
+                            accessPassphrase: _wifiAccessPassCtrl.text,
+                          );
+                          if (!mounted) return;
+                          setState(() {
+                            _wifiSyncIsError = false;
+                            _wifiSyncStatusBanner =
+                                'Wi-Fi Sync via code complete ($count item(s) updated).';
+                          });
+                        } catch (e) {
+                          if (!mounted) return;
+                          setState(() {
+                            _wifiSyncIsError = true;
+                            _wifiSyncStatusBanner = VaultController.describe(e);
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                  if (_wifiSyncStatusBanner != null) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      key: const ValueKey('wifi_sync_status_banner'),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: _wifiSyncIsError
+                            ? TacticalTheme.crimsonDim
+                            : TacticalTheme.emeraldDim,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: _wifiSyncIsError
+                              ? TacticalTheme.crimsonDanger
+                              : TacticalTheme.emeraldReady,
+                        ),
+                      ),
+                      child: Text(
+                        _wifiSyncStatusBanner!,
+                        style: TacticalTheme.monoStyle(
+                          fontSize: 11,
+                          color: _wifiSyncIsError
+                              ? TacticalTheme.crimsonDanger
+                              : TacticalTheme.emeraldReady,
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (c.wifiSyncPairedDevices.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    Text(
+                      'PAIRED DEVICES & LAST SYNC (${c.wifiSyncLastSyncedAt ?? "Just now"}):',
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: TacticalTheme.amberPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    for (final dev in c.wifiSyncPairedDevices)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          '• $dev',
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 11,
+                            color: TacticalTheme.textPrimary,
+                          ),
+                        ),
+                      ),
+                  ],
                 ],
               ),
             ),
@@ -1766,10 +2237,19 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                                           itemBuilder: (context, i) {
                                             final selected =
                                                 _selectedTab == i;
+                                            final hovered =
+                                                _hoveredTab == i;
                                             return InkWell(
                                               key: ValueKey(
                                                 'settings_tab_${_tabs[i].label}',
                                               ),
+                                              onHover: (v) => setState(() {
+                                                if (v) {
+                                                  _hoveredTab = i;
+                                                } else if (_hoveredTab == i) {
+                                                  _hoveredTab = null;
+                                                }
+                                              }),
                                               onTap: () => setState(() {
                                                 _selectedTab = i;
                                                 _selectingStorageForNewVault =
@@ -1777,34 +2257,71 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                                               }),
                                               child: Container(
                                                 padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 14,
-                                                      vertical: 10,
+                                                    const EdgeInsets.fromLTRB(
+                                                      14,
+                                                      9,
+                                                      13,
+                                                      9,
                                                     ),
                                                 decoration: BoxDecoration(
                                                   color: selected
                                                       ? TacticalTheme.bgElevated
-                                                      : Colors.transparent,
+                                                      : (hovered
+                                                          ? TacticalTheme.bgHover
+                                                          : Colors.transparent),
                                                   border: Border(
                                                     left: BorderSide(
                                                       color: selected
                                                           ? TacticalTheme
                                                               .amberPrimary
-                                                          : Colors.transparent,
+                                                          : (hovered
+                                                              ? TacticalTheme
+                                                                  .hoverBorderColor
+                                                              : Colors
+                                                                  .transparent),
                                                       width: 3,
                                                     ),
+                                                    top: BorderSide(
+                                                      color: hovered
+                                                          ? TacticalTheme
+                                                              .hoverBorderColor
+                                                          : Colors.transparent,
+                                                      width: 1,
+                                                    ),
+                                                    right: BorderSide(
+                                                      color: hovered
+                                                          ? TacticalTheme
+                                                              .hoverBorderColor
+                                                          : Colors.transparent,
+                                                      width: 1,
+                                                    ),
+                                                    bottom: BorderSide(
+                                                      color: hovered
+                                                          ? TacticalTheme
+                                                              .hoverBorderColor
+                                                          : Colors.transparent,
+                                                      width: 1,
+                                                    ),
                                                   ),
+                                                  boxShadow: hovered
+                                                      ? TacticalTheme.borderGlow
+                                                      : null,
                                                 ),
                                                 child: Row(
                                                   children: [
                                                     Icon(
                                                       _tabs[i].icon,
                                                       size: 17,
-                                                      color: selected
+                                                      color: (selected ||
+                                                              hovered)
                                                           ? TacticalTheme
                                                               .amberPrimary
                                                           : TacticalTheme
                                                               .cyanTactical,
+                                                      shadows: hovered
+                                                          ? TacticalTheme
+                                                              .textGlow
+                                                          : null,
                                                     ),
                                                     const SizedBox(width: 10),
                                                     Expanded(
@@ -1815,11 +2332,18 @@ class _EnpassSettingsDialogState extends State<EnpassSettingsDialog> {
                                                           fontWeight: selected
                                                               ? FontWeight.w700
                                                               : FontWeight.w500,
-                                                          color: selected
+                                                          color: hovered
                                                               ? TacticalTheme
-                                                                  .textPrimary
-                                                              : TacticalTheme
-                                                                  .textSecondary,
+                                                                  .amberBright
+                                                              : (selected
+                                                                  ? TacticalTheme
+                                                                      .textPrimary
+                                                                  : TacticalTheme
+                                                                      .textSecondary),
+                                                          shadows: hovered
+                                                              ? TacticalTheme
+                                                                  .textGlow
+                                                              : null,
                                                         ),
                                                       ),
                                                     ),

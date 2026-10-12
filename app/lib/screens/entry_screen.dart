@@ -67,6 +67,7 @@ class EntryScreen extends StatefulWidget {
     this.isEmbedded = false,
     this.onSaved,
     this.onDeleted,
+    this.onCancel,
   });
 
   final VaultController controller;
@@ -76,6 +77,7 @@ class EntryScreen extends StatefulWidget {
   final bool isEmbedded;
   final ValueChanged<String>? onSaved;
   final VoidCallback? onDeleted;
+  final VoidCallback? onCancel;
 
   @override
   State<EntryScreen> createState() => _EntryScreenState();
@@ -112,6 +114,94 @@ class _EntryScreenState extends State<EntryScreen> {
 
   List<String> _sections = ['ADDITIONAL DETAILS', 'Section'];
   final List<CustomFieldEntry> _customFields = [];
+
+  static const List<({String key, String label, String type, bool sensitive})>
+      kBuiltInFields = [
+    (key: 'username', label: 'Username', type: 'Username', sensitive: false),
+    (key: 'email', label: 'E-mail', type: 'E-mail', sensitive: false),
+    (key: 'password', label: 'Password', type: 'Password', sensitive: true),
+    (key: 'url', label: 'Website', type: 'URL', sensitive: false),
+    (key: 'phone', label: 'Phone number', type: 'Phone', sensitive: false),
+    (key: 'otp', label: 'One-time code', type: 'One-time Code', sensitive: true),
+    (
+      key: 'security_question',
+      label: 'Security question',
+      type: 'Text',
+      sensitive: false,
+    ),
+    (
+      key: 'security_answer',
+      label: 'Security answer',
+      type: 'Password',
+      sensitive: true,
+    ),
+    (key: 'notes', label: 'Notes', type: 'Multiline', sensitive: false),
+    (key: 'tags', label: 'Tags', type: 'Text', sensitive: false),
+  ];
+
+  static const String _removedBuiltInPrefix = '__removed_field__:';
+
+  late Set<String> _visibleBuiltInFields = {
+    for (final f in kBuiltInFields) f.key,
+  };
+  final Map<String, String> _builtInFieldLabels = {};
+
+  String _labelForBuiltIn(String key) {
+    final custom = _builtInFieldLabels[key];
+    if (custom != null && custom.isNotEmpty) return custom;
+    for (final f in kBuiltInFields) {
+      if (f.key == key) return f.label;
+    }
+    return key;
+  }
+
+  void _removeBuiltInField(String key) {
+    final label = _labelForBuiltIn(key);
+    setState(() {
+      _visibleBuiltInFields.remove(key);
+      switch (key) {
+        case 'username':
+          _username.clear();
+        case 'email':
+          _email.clear();
+        case 'password':
+          _password.text = '';
+        case 'url':
+          _url.clear();
+        case 'phone':
+          _phone.clear();
+        case 'otp':
+          _otpUri.text = '';
+          _otpModified = true;
+          _totpTimer?.cancel();
+          _totp = null;
+        case 'security_question':
+          _securityQuestion.clear();
+        case 'security_answer':
+          _securityAnswer.text = '';
+          _securityAnswerModified = true;
+        case 'notes':
+          _notes.clear();
+        case 'tags':
+          _tagsCtrl.clear();
+      }
+    });
+    _toast('Field "$label" removed.');
+  }
+
+  void _restoreBuiltInField(String key) {
+    setState(() {
+      _visibleBuiltInFields.add(key);
+      if ((key == 'phone' ||
+              key == 'otp' ||
+              key == 'security_question' ||
+              key == 'security_answer') &&
+          !_sections.contains('ADDITIONAL DETAILS')) {
+        _sections.insert(0, 'ADDITIONAL DETAILS');
+      }
+    });
+    _toast('Field "${_labelForBuiltIn(key)}" added.');
+  }
 
   bool _loading = false;
   bool _saving = false;
@@ -175,6 +265,10 @@ class _EntryScreenState extends State<EntryScreen> {
       _tagsCtrl.clear();
       _clearCustomFields();
       _sections = ['ADDITIONAL DETAILS', 'Section'];
+      _visibleBuiltInFields = {
+        for (final f in kBuiltInFields) f.key,
+      };
+      _builtInFieldLabels.clear();
       _attachments = [];
       _passkey = null;
       _lastPasskeyAssertion = null;
@@ -233,8 +327,14 @@ class _EntryScreenState extends State<EntryScreen> {
   }
 
   void _toast(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 2),
+      ),
     );
   }
 
@@ -362,8 +462,22 @@ class _EntryScreenState extends State<EntryScreen> {
       _loadedRevisionDate = entry.revisionDate;
 
       _clearCustomFields();
-      if (entry.sections.isNotEmpty) {
-        _sections = List.of(entry.sections);
+      _visibleBuiltInFields = {
+        for (final f in kBuiltInFields) f.key,
+      };
+      _builtInFieldLabels.clear();
+
+      final userSections = <String>[];
+      for (final s in entry.sections) {
+        if (s.startsWith(_removedBuiltInPrefix)) {
+          final removedKey = s.substring(_removedBuiltInPrefix.length);
+          _visibleBuiltInFields.remove(removedKey);
+        } else {
+          userSections.add(s);
+        }
+      }
+      if (userSections.isNotEmpty) {
+        _sections = userSections;
       } else {
         _sections = ['ADDITIONAL DETAILS', 'Section'];
       }
@@ -376,7 +490,9 @@ class _EntryScreenState extends State<EntryScreen> {
           CustomFieldEntry(
             name: cf.name,
             fieldType: cf.fieldType,
-            section: cf.section.isEmpty ? _sections.last : cf.section,
+            section: cf.section.isEmpty
+                ? (_sections.isNotEmpty ? _sections.last : 'Section')
+                : cf.section,
             sensitive: cf.sensitive,
             initialValue: cf.sensitive ? '' : cf.value,
             originalIndex: i,
@@ -385,7 +501,7 @@ class _EntryScreenState extends State<EntryScreen> {
         );
       }
 
-      if (entry.hasOtp) {
+      if (entry.hasOtp && _visibleBuiltInFields.contains('otp')) {
         unawaited(_refreshTotp());
         _totpTimer?.cancel();
         _totpTimer = Timer.periodic(
@@ -586,14 +702,33 @@ class _EntryScreenState extends State<EntryScreen> {
   }
 
   /// Opens the Enpass `Field Options` modal (`Enpass_1xVwnTUhyR.png` & `Enpass_ETlwI2CT5x.png`).
-  Future<void> _showFieldOptionsModal({CustomFieldEntry? existingField}) async {
-    var fieldName = existingField?.name ?? 'Custom Field';
-    var selectedType = existingField?.fieldType ?? 'Username';
+  Future<void> _showFieldOptionsModal({
+    CustomFieldEntry? existingField,
+    String? builtInFieldKey,
+    String? targetSection,
+  }) async {
+    final builtInMeta = builtInFieldKey == null
+        ? null
+        : kBuiltInFields
+            .where((f) => f.key == builtInFieldKey)
+            .firstOrNull;
+    var fieldName = existingField?.name ??
+        (builtInFieldKey != null
+            ? _labelForBuiltIn(builtInFieldKey)
+            : 'Custom Field');
+    var selectedType =
+        existingField?.fieldType ?? builtInMeta?.type ?? 'Username';
     if (!kEnpassFieldTypes.contains(selectedType)) {
       selectedType = 'Text';
     }
-    var sensitive = existingField?.sensitive ?? false;
-    final selectedSection = existingField?.section ?? _sections.last;
+    var sensitive =
+        existingField?.sensitive ?? builtInMeta?.sensitive ?? false;
+    final defaultSec = _sections
+            .where((s) => s != 'ADDITIONAL DETAILS')
+            .lastOrNull ??
+        (_sections.isNotEmpty ? _sections.last : 'Section');
+    final selectedSection =
+        targetSection ?? existingField?.section ?? defaultSec;
 
     final action = await showDialog<String>(
       context: context,
@@ -732,6 +867,8 @@ class _EntryScreenState extends State<EntryScreen> {
           existingField.dispose();
         });
         _toast('Field deleted.');
+      } else if (builtInFieldKey != null) {
+        _removeBuiltInField(builtInFieldKey);
       }
     } else if (action == 'save') {
       final trimmedName = fieldName.trim().isEmpty
@@ -743,6 +880,9 @@ class _EntryScreenState extends State<EntryScreen> {
           existingField.fieldType = selectedType;
           existingField.sensitive = sensitive;
         } else {
+          if (!_sections.contains(selectedSection)) {
+            _sections.add(selectedSection);
+          }
           _customFields.add(
             CustomFieldEntry(
               name: trimmedName,
@@ -994,6 +1134,7 @@ class _EntryScreenState extends State<EntryScreen> {
   }
 
   List<String> _parseTags() {
+    if (!_visibleBuiltInFields.contains('tags')) return const [];
     return _tagsCtrl.text
         .split(RegExp(r'[,;]'))
         .map((s) => s.trim())
@@ -1004,7 +1145,7 @@ class _EntryScreenState extends State<EntryScreen> {
   Future<void> _save() async {
     if (!(_form.currentState?.validate() ?? false)) return;
 
-    if (_password.text.isEmpty) {
+    if (_visibleBuiltInFields.contains('password') && _password.text.isEmpty) {
       final proceed = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -1044,19 +1185,33 @@ class _EntryScreenState extends State<EntryScreen> {
           _isFavorite ||
           _isArchived ||
           _isTrashed;
-      final effectiveOtp =
-          (_otpLoaded || _otpModified) ? _otpUri.text.trim() : null;
-      final effectiveSecAnswer = (_securityAnswerLoaded || _securityAnswerModified)
-          ? _securityAnswer.text
-          : null;
+      final effectiveOtp = !_visibleBuiltInFields.contains('otp')
+          ? ''
+          : ((_otpLoaded || _otpModified) ? _otpUri.text.trim() : null);
+      final effectiveSecAnswer =
+          !_visibleBuiltInFields.contains('security_answer')
+              ? ''
+              : ((_securityAnswerLoaded || _securityAnswerModified)
+                  ? _securityAnswer.text
+                  : null);
+      final serializedSections = <String>[
+        ..._sections,
+        for (final f in kBuiltInFields)
+          if (!_visibleBuiltInFields.contains(f.key))
+            '$_removedBuiltInPrefix${f.key}',
+      ];
       final savedId = await widget.controller.save(
         widget.entryId,
         EntryDraft(
           title: _title.text.trim(),
-          username: _username.text.trim(),
-          password: _password.text,
-          url: _url.text.trim(),
-          notes: _notes.text,
+          username: _visibleBuiltInFields.contains('username')
+              ? _username.text.trim()
+              : '',
+          password: _visibleBuiltInFields.contains('password')
+              ? _password.text
+              : '',
+          url: _visibleBuiltInFields.contains('url') ? _url.text.trim() : '',
+          notes: _visibleBuiltInFields.contains('notes') ? _notes.text : '',
           groupId: _selectedGroupId,
           otp: effectiveOtp,
           lastKnownRevisionDate: _loadedRevisionDate,
@@ -1065,11 +1220,17 @@ class _EntryScreenState extends State<EntryScreen> {
           isFavorite: _isFavorite,
           isArchived: _isArchived,
           isTrashed: _isTrashed,
-          email: _email.text.trim(),
-          phone: _phone.text.trim(),
-          securityQuestion: _securityQuestion.text.trim(),
+          email: _visibleBuiltInFields.contains('email')
+              ? _email.text.trim()
+              : '',
+          phone: _visibleBuiltInFields.contains('phone')
+              ? _phone.text.trim()
+              : '',
+          securityQuestion: _visibleBuiltInFields.contains('security_question')
+              ? _securityQuestion.text.trim()
+              : '',
           securityAnswer: effectiveSecAnswer,
-          sections: List.of(_sections),
+          sections: serializedSections,
           customFields: [
             for (final cf in _customFields)
               VaultCustomField(
@@ -1098,9 +1259,10 @@ class _EntryScreenState extends State<EntryScreen> {
         _toast('Entry saved to KDBX4 vault.');
         widget.onSaved?.call(savedId);
         if (widget.entryId != null) {
-          final hasActiveOtp = (_otpLoaded || _otpModified)
-              ? _otpUri.text.trim().isNotEmpty
-              : _hasExistingOtp;
+          final hasActiveOtp = _visibleBuiltInFields.contains('otp') &&
+              ((_otpLoaded || _otpModified)
+                  ? _otpUri.text.trim().isNotEmpty
+                  : _hasExistingOtp);
           if (hasActiveOtp) {
             unawaited(_refreshTotp());
             _totpTimer?.cancel();
@@ -1166,6 +1328,9 @@ class _EntryScreenState extends State<EntryScreen> {
   }
 
   Widget _buildAddDropdownButton() {
+    final removedFields = kBuiltInFields
+        .where((f) => !_visibleBuiltInFields.contains(f.key))
+        .toList();
     return PopupMenuButton<String>(
       key: const ValueKey('entry_button_add_menu'),
       tooltip: 'Add Field, Section, or Attachment',
@@ -1177,6 +1342,8 @@ class _EntryScreenState extends State<EntryScreen> {
           unawaited(_showAddSectionModal());
         } else if (value == 'attachment') {
           unawaited(_addAttachment());
+        } else if (value.startsWith('restore:')) {
+          _restoreBuiltInField(value.substring('restore:'.length));
         }
       },
       itemBuilder: (ctx) => [
@@ -1222,6 +1389,23 @@ class _EntryScreenState extends State<EntryScreen> {
             ],
           ),
         ),
+        if (removedFields.isNotEmpty) const PopupMenuDivider(),
+        for (final rf in removedFields)
+          PopupMenuItem(
+            key: ValueKey('add_menu_restore_${rf.key}'),
+            value: 'restore:${rf.key}',
+            child: Row(
+              children: [
+                Icon(
+                  Icons.add_circle_outline,
+                  size: 16,
+                  color: TacticalTheme.emeraldReady,
+                ),
+                const SizedBox(width: 10),
+                Text('Add ${rf.label}'),
+              ],
+            ),
+          ),
       ],
       child: Container(
         height: 30,
@@ -1254,6 +1438,31 @@ class _EntryScreenState extends State<EntryScreen> {
     );
   }
 
+  Widget _buildFieldRow(bool isWideForm, String label, Widget field) {
+    if (!isWideForm) return field;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 130,
+          child: Padding(
+            padding: const EdgeInsets.only(top: 12, right: 14),
+            child: Text(
+              label,
+              textAlign: TextAlign.right,
+              style: TacticalTheme.monoStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: TacticalTheme.textSecondary,
+              ),
+            ),
+          ),
+        ),
+        Expanded(child: field),
+      ],
+    );
+  }
+
   Widget _buildInspectorBody(BuildContext context) {
     final groups = widget.controller.groups;
     final groupValid = _selectedGroupId == null ||
@@ -1266,13 +1475,19 @@ class _EntryScreenState extends State<EntryScreen> {
       );
     }
 
-    return Form(
-      key: _form,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+    return LayoutBuilder(
+      builder: (context, bodyConstraints) {
+        final isWideForm = bodyConstraints.maxWidth >= 520;
+        return Form(
+          key: _form,
+          child: SingleChildScrollView(
+            padding: EdgeInsets.symmetric(
+              horizontal: isWideForm ? 24 : 16,
+              vertical: 16,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
           // TOTP Digital Amber Readout + Segmented Bar
           if (_totp != null) ...[
             Container(
@@ -1370,66 +1585,10 @@ class _EntryScreenState extends State<EntryScreen> {
             const SizedBox(height: 16),
           ],
 
-          // Category & Group Dropdowns
-          DropdownButtonFormField<String>(
-            key: const ValueKey('entry_dropdown_category'),
-            initialValue: _selectedCategory,
-            isExpanded: true,
-            dropdownColor: TacticalTheme.bgElevated,
-            style: TacticalTheme.monoStyle(
-              fontSize: 12,
-              color: TacticalTheme.textPrimary,
-            ),
-            decoration: const InputDecoration(
-              labelText: 'Category',
-            ),
-            items: [
-              for (final cat in kEnpassCategories)
-                DropdownMenuItem(
-                  value: cat,
-                  child: Text(cat, overflow: TextOverflow.ellipsis),
-                ),
-            ],
-            onChanged: (v) {
-              if (v != null) setState(() => _selectedCategory = v);
-            },
-          ),
-          if (groups.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            DropdownButtonFormField<String?>(
-              key: ValueKey('entry_group_$effectiveGroupId'),
-              initialValue: effectiveGroupId,
-              isExpanded: true,
-              dropdownColor: TacticalTheme.bgElevated,
-              style: TacticalTheme.monoStyle(
-                fontSize: 12,
-                color: TacticalTheme.textPrimary,
-              ),
-              decoration: const InputDecoration(
-                labelText: 'Group',
-              ),
-              items: [
-                const DropdownMenuItem<String?>(
-                  value: null,
-                  child: Text(
-                    'Root Group (None)',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                for (final g in groups)
-                  DropdownMenuItem<String?>(
-                    value: g.id,
-                    child: Text(g.name, overflow: TextOverflow.ellipsis),
-                  ),
-              ],
-              onChanged: (val) => setState(() => _selectedGroupId = val),
-            ),
-          ],
-          const SizedBox(height: 14),
-
           // Title with Enpass Avatar + Edit Badge (`Enpass_RUtKiX9m54.png`)
           Row(
             children: [
+              if (isWideForm) const SizedBox(width: 78),
               Stack(
                 clipBehavior: Clip.none,
                 children: [
@@ -1473,6 +1632,7 @@ class _EntryScreenState extends State<EntryScreen> {
                   ),
                   decoration: const InputDecoration(
                     labelText: 'Title',
+                    hintText: 'Add Title',
                   ),
                   onChanged: (_) => setState(() {}),
                   validator: (v) => (v == null || v.trim().isEmpty)
@@ -1484,316 +1644,484 @@ class _EntryScreenState extends State<EntryScreen> {
           ),
           const SizedBox(height: 14),
 
-          // Username with Field Options (â€¢â€¢â€¢)
-          TextFormField(
-            key: const ValueKey('entry_field_username'),
-            controller: _username,
-            autocorrect: false,
-            style: TacticalTheme.monoStyle(
-              fontSize: 13,
-              color: TacticalTheme.textPrimary,
-            ),
-            decoration: InputDecoration(
-              labelText: 'Username',
-              prefixIcon: Icon(
-                Icons.drag_handle,
-                size: 16,
-                color: TacticalTheme.textMuted,
+          // Category & Group Dropdowns
+          _buildFieldRow(
+            isWideForm,
+            'Category',
+            DropdownButtonFormField<String>(
+              key: const ValueKey('entry_dropdown_category'),
+              initialValue: _selectedCategory,
+              isExpanded: true,
+              dropdownColor: TacticalTheme.bgElevated,
+              style: TacticalTheme.monoStyle(
+                fontSize: 12,
+                color: TacticalTheme.textPrimary,
               ),
-              suffixIcon: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'Copy username',
-                    icon: Icon(
-                      Icons.copy,
-                      size: 17,
-                      color: TacticalTheme.cyanTactical,
-                    ),
-                    onPressed: () {
-                      if (_username.text.isNotEmpty) {
-                        ClipboardGuard.copySecret(_username.text);
-                        _toast('Username copied. Clears in 15 seconds.');
-                      }
-                    },
-                  ),
-                  IconButton(
-                    key: const ValueKey('field_options_Username'),
-                    tooltip: 'Field Options',
-                    icon: Icon(
-                      Icons.more_horiz,
-                      size: 18,
-                      color: TacticalTheme.textSecondary,
-                    ),
-                    onPressed: () => _showFieldOptionsModal(),
-                  ),
-                ],
+              decoration: const InputDecoration(
+                labelText: 'Category',
               ),
+              items: [
+                for (final cat in kEnpassCategories)
+                  DropdownMenuItem(
+                    value: cat,
+                    child: Text(cat, overflow: TextOverflow.ellipsis),
+                  ),
+              ],
+              onChanged: (v) {
+                if (v != null) setState(() => _selectedCategory = v);
+              },
             ),
           ),
+          if (groups.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            _buildFieldRow(
+              isWideForm,
+              'Group',
+              DropdownButtonFormField<String?>(
+                key: ValueKey('entry_group_$effectiveGroupId'),
+                initialValue: effectiveGroupId,
+                isExpanded: true,
+                dropdownColor: TacticalTheme.bgElevated,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 12,
+                  color: TacticalTheme.textPrimary,
+                ),
+                decoration: const InputDecoration(
+                  labelText: 'Group',
+                ),
+                items: [
+                  const DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text(
+                      'Root Group (None)',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  for (final g in groups)
+                    DropdownMenuItem<String?>(
+                      value: g.id,
+                      child: Text(g.name, overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                onChanged: (val) => setState(() => _selectedGroupId = val),
+              ),
+            ),
+          ],
           const SizedBox(height: 14),
+
+          // Username with Field Options & Remove Button
+          if (_visibleBuiltInFields.contains('username')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('username'),
+              TextFormField(
+                key: const ValueKey('entry_field_username'),
+                controller: _username,
+                autocorrect: false,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 13,
+                  color: TacticalTheme.textPrimary,
+                ),
+                decoration: InputDecoration(
+                  labelText: _labelForBuiltIn('username'),
+                  prefixIcon: Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: TacticalTheme.textMuted,
+                  ),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'Copy username',
+                        icon: Icon(
+                          Icons.copy,
+                          size: 17,
+                          color: TacticalTheme.cyanTactical,
+                        ),
+                        onPressed: () {
+                          if (_username.text.isNotEmpty) {
+                            ClipboardGuard.copySecret(_username.text);
+                            _toast('Username copied. Clears in 15 seconds.');
+                          }
+                        },
+                      ),
+                      IconButton(
+                        key: const ValueKey('remove_builtin_field_username'),
+                        tooltip: 'Remove field',
+                        icon: Icon(
+                          Icons.remove_circle_outline,
+                          size: 17,
+                          color: TacticalTheme.crimsonDanger,
+                        ),
+                        onPressed: () => _removeBuiltInField('username'),
+                      ),
+                      IconButton(
+                        key: const ValueKey('field_options_Username'),
+                        tooltip: 'Field Options',
+                        icon: Icon(
+                          Icons.more_horiz,
+                          size: 18,
+                          color: TacticalTheme.textSecondary,
+                        ),
+                        onPressed: () => _showFieldOptionsModal(
+                          builtInFieldKey: 'username',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
 
           // E-mail (Enpass Primary Field)
-          TextFormField(
-            key: const ValueKey('entry_field_email'),
-            controller: _email,
-            keyboardType: TextInputType.emailAddress,
-            autocorrect: false,
-            style: TacticalTheme.monoStyle(
-              fontSize: 13,
-              color: TacticalTheme.textPrimary,
-            ),
-            decoration: InputDecoration(
-              labelText: 'E-mail',
-              prefixIcon: Icon(
-                Icons.drag_handle,
-                size: 16,
-                color: TacticalTheme.textMuted,
-              ),
-              suffixIcon: IconButton(
-                tooltip: 'Field Options',
-                icon: Icon(
-                  Icons.more_horiz,
-                  size: 18,
-                  color: TacticalTheme.textSecondary,
+          if (_visibleBuiltInFields.contains('email')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('email'),
+              TextFormField(
+                key: const ValueKey('entry_field_email'),
+                controller: _email,
+                keyboardType: TextInputType.emailAddress,
+                autocorrect: false,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 13,
+                  color: TacticalTheme.textPrimary,
                 ),
-                onPressed: () => _showFieldOptionsModal(),
+                decoration: InputDecoration(
+                  labelText: _labelForBuiltIn('email'),
+                  prefixIcon: Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: TacticalTheme.textMuted,
+                  ),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        key: const ValueKey('remove_builtin_field_email'),
+                        tooltip: 'Remove field',
+                        icon: Icon(
+                          Icons.remove_circle_outline,
+                          size: 17,
+                          color: TacticalTheme.crimsonDanger,
+                        ),
+                        onPressed: () => _removeBuiltInField('email'),
+                      ),
+                      IconButton(
+                        key: const ValueKey('field_options_Email'),
+                        tooltip: 'Field Options',
+                        icon: Icon(
+                          Icons.more_horiz,
+                          size: 18,
+                          color: TacticalTheme.textSecondary,
+                        ),
+                        onPressed: () =>
+                            _showFieldOptionsModal(builtInFieldKey: 'email'),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 14),
+            const SizedBox(height: 14),
+          ],
 
           // Password Box + Enpass Generate / Generator History + Entropy Bar
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: TacticalTheme.bgSurface,
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: TacticalTheme.borderTech, width: 1),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                ListenableBuilder(
-                  listenable: widget.controller,
-                  builder: (context, _) {
-                    final showPw = _show || !widget.controller.hideSensitive;
-                    return TextFormField(
-                      key: const ValueKey('entry_field_password'),
-                      controller: _password,
-                      obscureText: !showPw,
-                      enableSuggestions: false,
-                      autocorrect: false,
-                      enableIMEPersonalizedLearning: false,
-                      onChanged: (_) => setState(() {}),
-                      style: TacticalTheme.monoStyle(
-                        fontSize: 13,
-                        color: TacticalTheme.amberBright,
+          if (_visibleBuiltInFields.contains('password')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('password'),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: TacticalTheme.bgSurface,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: TacticalTheme.borderTech, width: 1),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    ListenableBuilder(
+                      listenable: widget.controller,
+                      builder: (context, _) {
+                        final showPw =
+                            _show || !widget.controller.hideSensitive;
+                        return TextFormField(
+                          key: const ValueKey('entry_field_password'),
+                          controller: _password,
+                          obscureText: !showPw,
+                          enableSuggestions: false,
+                          autocorrect: false,
+                          enableIMEPersonalizedLearning: false,
+                          onChanged: (_) => setState(() {}),
+                          style: TacticalTheme.monoStyle(
+                            fontSize: 13,
+                            color: TacticalTheme.amberBright,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: _labelForBuiltIn('password'),
+                            suffixIcon: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: showPw ? 'Hide' : 'Show',
+                                  icon: Icon(
+                                    showPw
+                                        ? Icons.visibility_off
+                                        : Icons.visibility,
+                                    size: 18,
+                                  ),
+                                  onPressed: () {
+                                    if (!widget.controller.hideSensitive) {
+                                      widget.controller.updateSettings(
+                                        hideSensitive: true,
+                                      );
+                                      setState(() => _show = false);
+                                    } else {
+                                      setState(() => _show = !_show);
+                                    }
+                                  },
+                                ),
+                                IconButton(
+                                  tooltip: 'Generate',
+                                  icon: Icon(
+                                    Icons.autorenew,
+                                    size: 18,
+                                    color: TacticalTheme.amberPrimary,
+                                  ),
+                                  onPressed: _generate,
+                                ),
+                                IconButton(
+                                  tooltip: 'Copy',
+                                  icon: Icon(
+                                    Icons.copy,
+                                    size: 18,
+                                    color: TacticalTheme.cyanTactical,
+                                  ),
+                                  onPressed: () {
+                                    ClipboardGuard.copySecret(_password.text);
+                                    _toast(
+                                      'Password copied. Clears in 15 seconds.',
+                                    );
+                                  },
+                                ),
+                                IconButton(
+                                  key: const ValueKey(
+                                    'remove_builtin_field_password',
+                                  ),
+                                  tooltip: 'Remove field',
+                                  icon: Icon(
+                                    Icons.remove_circle_outline,
+                                    size: 17,
+                                    color: TacticalTheme.crimsonDanger,
+                                  ),
+                                  onPressed: () =>
+                                      _removeBuiltInField('password'),
+                                ),
+                                IconButton(
+                                  key: const ValueKey(
+                                    'field_options_Password',
+                                  ),
+                                  tooltip: 'Field Options',
+                                  icon: Icon(
+                                    Icons.more_horiz,
+                                    size: 18,
+                                    color: TacticalTheme.textSecondary,
+                                  ),
+                                  onPressed: () => _showFieldOptionsModal(
+                                    builtInFieldKey: 'password',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 6),
+                    // Enpass Password Strength Bar under Password Field
+                    LinearProgressIndicator(
+                      value: (_password.text.length / 20.0).clamp(0.0, 1.0),
+                      minHeight: 4,
+                      backgroundColor: TacticalTheme.bgDeepCarbon,
+                      color: _password.text.length >= 14
+                          ? TacticalTheme.emeraldReady
+                          : (_password.text.length >= 8
+                              ? TacticalTheme.amberPrimary
+                              : TacticalTheme.crimsonDanger),
+                    ),
+                    if ((_show || !widget.controller.hideSensitive) &&
+                        _password.text.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: TacticalTheme.bgDeepCarbon,
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(
+                            color: TacticalTheme.borderSubtle,
+                            width: 1,
+                          ),
+                        ),
+                        child: TacticalColorPassword(
+                          key: const ValueKey('entry_color_password_preview'),
+                          password: _password.text,
+                        ),
                       ),
-                      decoration: InputDecoration(
-                        labelText: 'Password',
-                        suffixIcon: Row(
-                          mainAxisSize: MainAxisSize.min,
+                    ],
+                    const SizedBox(height: 10),
+                    // Enpass `Generate` & `Generator History` Buttons (`Enpass_RUtKiX9m54.png`, `Enpass_rfEIu8FoJV.png`)
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      alignment: WrapAlignment.spaceBetween,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 6,
                           children: [
-                            IconButton(
-                              tooltip: showPw ? 'Hide' : 'Show',
-                              icon: Icon(
-                                showPw
-                                    ? Icons.visibility_off
-                                    : Icons.visibility,
-                                size: 18,
+                            OutlinedButton(
+                              key: const ValueKey(
+                                'entry_button_open_generator',
                               ),
-                              onPressed: () {
-                                if (!widget.controller.hideSensitive) {
-                                  widget.controller.updateSettings(
-                                    hideSensitive: true,
-                                  );
-                                  setState(() => _show = false);
-                                } else {
-                                  setState(() => _show = !_show);
-                                }
-                              },
+                              onPressed: _openEnpassGenerator,
+                              child: const Text('Generate'),
                             ),
-                            IconButton(
-                              tooltip: 'Generate',
-                              icon: Icon(
-                                Icons.autorenew,
-                                size: 18,
-                                color: TacticalTheme.amberPrimary,
+                            OutlinedButton(
+                              key: const ValueKey(
+                                'entry_button_generator_history',
                               ),
-                              onPressed: _generate,
-                            ),
-                            IconButton(
-                              tooltip: 'Copy',
-                              icon: Icon(
-                                Icons.copy,
-                                size: 18,
-                                color: TacticalTheme.cyanTactical,
-                              ),
-                              onPressed: () {
-                                ClipboardGuard.copySecret(_password.text);
-                                _toast('Password copied. Clears in 15 seconds.');
-                              },
+                              onPressed: _showGeneratorHistoryDialog,
+                              child: const Text('Generator History'),
                             ),
                           ],
                         ),
-                      ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 6),
-                // Enpass Password Strength Bar under Password Field
-                LinearProgressIndicator(
-                  value: (_password.text.length / 20.0).clamp(0.0, 1.0),
-                  minHeight: 4,
-                  backgroundColor: TacticalTheme.bgDeepCarbon,
-                  color: _password.text.length >= 14
-                      ? TacticalTheme.emeraldReady
-                      : (_password.text.length >= 8
-                          ? TacticalTheme.amberPrimary
-                          : TacticalTheme.crimsonDanger),
-                ),
-                if ((_show || !widget.controller.hideSensitive) &&
-                    _password.text.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: TacticalTheme.bgDeepCarbon,
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(
-                        color: TacticalTheme.borderSubtle,
-                        width: 1,
-                      ),
-                    ),
-                    child: TacticalColorPassword(
-                      key: const ValueKey('entry_color_password_preview'),
-                      password: _password.text,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 10),
-                // Enpass `Generate` & `Generator History` Buttons (`Enpass_RUtKiX9m54.png`, `Enpass_rfEIu8FoJV.png`)
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  alignment: WrapAlignment.spaceBetween,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      children: [
-                        OutlinedButton(
-                          key: const ValueKey('entry_button_open_generator'),
-                          onPressed: _openEnpassGenerator,
-                          child: const Text('Generate'),
-                        ),
-                        OutlinedButton(
-                          key: const ValueKey(
-                            'entry_button_generator_history',
-                          ),
-                          onPressed: _showGeneratorHistoryDialog,
-                          child: const Text('Generator History'),
-                        ),
-                      ],
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        TacticalActionSquare(
-                          icon: Icons.remove,
-                          tooltip: 'Decrease length',
-                          size: 26,
-                          color: TacticalTheme.textPrimary,
-                          onPressed: _genLength > 12
-                              ? () => setState(() => _genLength -= 4)
-                              : null,
-                        ),
-                        const SizedBox(width: 6),
-                        TacticalActionSquare(
-                          icon: Icons.add,
-                          tooltip: 'Increase length',
-                          size: 26,
-                          color: TacticalTheme.textPrimary,
-                          onPressed: _genLength < 64
-                              ? () => setState(() => _genLength += 4)
-                              : null,
-                        ),
-                        const SizedBox(width: 6),
-                        InkWell(
-                          onTap: () =>
-                              setState(() => _genSymbols = !_genSymbols),
-                          borderRadius: BorderRadius.circular(4),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 4,
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            TacticalActionSquare(
+                              icon: Icons.remove,
+                              tooltip: 'Decrease length',
+                              size: 26,
+                              color: TacticalTheme.textPrimary,
+                              onPressed: _genLength > 12
+                                  ? () => setState(() => _genLength -= 4)
+                                  : null,
                             ),
-                            decoration: BoxDecoration(
-                              color: _genSymbols
-                                  ? TacticalTheme.cyanDim
-                                  : TacticalTheme.bgDeepCarbon,
+                            const SizedBox(width: 6),
+                            TacticalActionSquare(
+                              icon: Icons.add,
+                              tooltip: 'Increase length',
+                              size: 26,
+                              color: TacticalTheme.textPrimary,
+                              onPressed: _genLength < 64
+                                  ? () => setState(() => _genLength += 4)
+                                  : null,
+                            ),
+                            const SizedBox(width: 6),
+                            InkWell(
+                              onTap: () =>
+                                  setState(() => _genSymbols = !_genSymbols),
                               borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                color: _genSymbols
-                                    ? TacticalTheme.cyanTactical
-                                    : TacticalTheme.borderTech,
-                                width: 1,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: _genSymbols
+                                      ? TacticalTheme.cyanDim
+                                      : TacticalTheme.bgDeepCarbon,
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                    color: _genSymbols
+                                        ? TacticalTheme.cyanTactical
+                                        : TacticalTheme.borderTech,
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Text(
+                                  '#!@',
+                                  style: TacticalTheme.monoStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: _genSymbols
+                                        ? TacticalTheme.cyanTactical
+                                        : TacticalTheme.textMuted,
+                                  ),
+                                ),
                               ),
                             ),
-                            child: Text(
-                              '#!@',
-                              style: TacticalTheme.monoStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: _genSymbols
-                                    ? TacticalTheme.cyanTactical
-                                    : TacticalTheme.textMuted,
-                              ),
-                            ),
-                          ),
+                          ],
                         ),
                       ],
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
-          ),
-          const SizedBox(height: 14),
+            const SizedBox(height: 14),
+          ],
 
-          // URL (`Enpass_RUtKiX9m54.png`)
-          TextFormField(
-            controller: _url,
-            keyboardType: TextInputType.url,
-            autocorrect: false,
-            style: TacticalTheme.monoStyle(
-              fontSize: 12,
-              color: TacticalTheme.cyanTactical,
-            ),
-            decoration: InputDecoration(
-              labelText: 'URL',
-              prefixIcon: Icon(
-                Icons.drag_handle,
-                size: 16,
-                color: TacticalTheme.textMuted,
-              ),
-              suffixIcon: IconButton(
-                tooltip: 'Field Options',
-                icon: Icon(
-                  Icons.more_horiz,
-                  size: 18,
-                  color: TacticalTheme.textSecondary,
+          // URL / Website (`Enpass_RUtKiX9m54.png`)
+          if (_visibleBuiltInFields.contains('url')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('url'),
+              TextFormField(
+                key: const ValueKey('entry_field_url'),
+                controller: _url,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 12,
+                  color: TacticalTheme.cyanTactical,
                 ),
-                onPressed: () => _showFieldOptionsModal(),
+                decoration: InputDecoration(
+                  labelText: 'URL',
+                  prefixIcon: Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: TacticalTheme.textMuted,
+                  ),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        key: const ValueKey('remove_builtin_field_url'),
+                        tooltip: 'Remove field',
+                        icon: Icon(
+                          Icons.remove_circle_outline,
+                          size: 17,
+                          color: TacticalTheme.crimsonDanger,
+                        ),
+                        onPressed: () => _removeBuiltInField('url'),
+                      ),
+                      IconButton(
+                        key: const ValueKey('field_options_URL'),
+                        tooltip: 'Field Options',
+                        icon: Icon(
+                          Icons.more_horiz,
+                          size: 18,
+                          color: TacticalTheme.textSecondary,
+                        ),
+                        onPressed: () =>
+                            _showFieldOptionsModal(builtInFieldKey: 'url'),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 14),
+            const SizedBox(height: 14),
+          ],
 
           // Passkey (FIDO2 / WebAuthn) Box
           Container(
@@ -1936,7 +2264,7 @@ class _EntryScreenState extends State<EntryScreen> {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          'Spec: ES256 (P-256) â€¢ Synced (BE=1, BS=1) â€¢ Windows 11 & Android 14+',
+                          'Spec: ES256 (P-256) • Synced (BE=1, BS=1) • Windows 11 & Android 14+',
                           style: TacticalTheme.monoStyle(
                             fontSize: 9,
                             color: TacticalTheme.emeraldReady,
@@ -2063,176 +2391,332 @@ class _EntryScreenState extends State<EntryScreen> {
           ),
           const SizedBox(height: 16),
 
-          // Enpass `ADDITIONAL DETAILS` Section (`Enpass_RUtKiX9m54.png`)
-          Text(
-            'ADDITIONAL DETAILS',
-            style: TacticalTheme.monoStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              color: TacticalTheme.amberPrimary,
-              letterSpacing: 0.8,
+          // Enpass `ADDITIONAL DETAILS` Section Bar (`media_1791754823466_415d87e6.png`)
+          if (_sections.contains('ADDITIONAL DETAILS')) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: TacticalTheme.bgSurface,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: TacticalTheme.borderTech, width: 1),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: TacticalTheme.textMuted,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'ADDITIONAL DETAILS',
+                      style: TacticalTheme.monoStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: TacticalTheme.amberPrimary,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                  ),
+                  InkWell(
+                    onTap: () => _showFieldOptionsModal(),
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.add,
+                        size: 16,
+                        color: TacticalTheme.textSecondary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  InkWell(
+                    key: const ValueKey('remove_section_ADDITIONAL DETAILS'),
+                    onTap: () {
+                      setState(() {
+                        _sections.remove('ADDITIONAL DETAILS');
+                        _visibleBuiltInFields.removeAll([
+                          'phone',
+                          'otp',
+                          'security_question',
+                          'security_answer',
+                        ]);
+                        _phone.clear();
+                        _otpUri.clear();
+                        _otpModified = true;
+                        _totpTimer?.cancel();
+                        _totp = null;
+                        _securityQuestion.clear();
+                        _securityAnswer.clear();
+                        _securityAnswerModified = true;
+                      });
+                      _toast('Section "ADDITIONAL DETAILS" removed.');
+                    },
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.close,
+                        size: 16,
+                        color: TacticalTheme.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
+            const SizedBox(height: 12),
+          ],
 
           // Phone number
-          TextFormField(
-            key: const ValueKey('entry_field_phone'),
-            controller: _phone,
-            keyboardType: TextInputType.phone,
-            style: TacticalTheme.monoStyle(
-              fontSize: 12,
-              color: TacticalTheme.textPrimary,
-            ),
-            decoration: InputDecoration(
-              labelText: 'Phone number',
-              prefixIcon: Icon(
-                Icons.drag_handle,
-                size: 16,
-                color: TacticalTheme.textMuted,
-              ),
-              suffixIcon: IconButton(
-                tooltip: 'Field Options',
-                icon: Icon(
-                  Icons.more_horiz,
-                  size: 18,
-                  color: TacticalTheme.textSecondary,
+          if (_visibleBuiltInFields.contains('phone')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('phone'),
+              TextFormField(
+                key: const ValueKey('entry_field_phone'),
+                controller: _phone,
+                keyboardType: TextInputType.phone,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 12,
+                  color: TacticalTheme.textPrimary,
                 ),
-                onPressed: () => _showFieldOptionsModal(),
+                decoration: InputDecoration(
+                  labelText: _labelForBuiltIn('phone'),
+                  prefixIcon: Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: TacticalTheme.textMuted,
+                  ),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        key: const ValueKey('remove_builtin_field_phone'),
+                        tooltip: 'Remove field',
+                        icon: Icon(
+                          Icons.remove_circle_outline,
+                          size: 17,
+                          color: TacticalTheme.crimsonDanger,
+                        ),
+                        onPressed: () => _removeBuiltInField('phone'),
+                      ),
+                      IconButton(
+                        key: const ValueKey('field_options_Phone'),
+                        tooltip: 'Field Options',
+                        icon: Icon(
+                          Icons.more_horiz,
+                          size: 18,
+                          color: TacticalTheme.textSecondary,
+                        ),
+                        onPressed: () =>
+                            _showFieldOptionsModal(builtInFieldKey: 'phone'),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 12),
+            const SizedBox(height: 12),
+          ],
 
           // One-time code (TOTP Secret URI)
-          TextFormField(
-            key: const ValueKey('entry_field_otp'),
-            controller: _otpUri,
-            obscureText: !_showOtp,
-            enableSuggestions: false,
-            autocorrect: false,
-            enableIMEPersonalizedLearning: false,
-            onChanged: (_) => _otpModified = true,
-            style: TacticalTheme.monoStyle(
-              fontSize: 12,
-              color: TacticalTheme.textPrimary,
-            ),
-            decoration: InputDecoration(
-              labelText: 'One-time code (TOTP URI or Secret)',
-              hintText: _hasExistingOtp && !_otpLoaded && !_otpModified
-                  ? 'â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢ (Stored â€” tap Show to reveal)'
-                  : 'Enter secret key',
-              prefixIcon: Icon(
-                Icons.drag_handle,
-                size: 16,
-                color: TacticalTheme.textMuted,
-              ),
-              suffixIcon: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: _showOtp ? 'Hide' : 'Show',
-                    icon: Icon(
-                      _showOtp ? Icons.visibility_off : Icons.visibility,
-                      size: 18,
-                    ),
-                    onPressed: _toggleShowOtp,
+          if (_visibleBuiltInFields.contains('otp')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('otp'),
+              TextFormField(
+                key: const ValueKey('entry_field_otp'),
+                controller: _otpUri,
+                obscureText: !_showOtp,
+                enableSuggestions: false,
+                autocorrect: false,
+                enableIMEPersonalizedLearning: false,
+                onChanged: (_) => _otpModified = true,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 12,
+                  color: TacticalTheme.textPrimary,
+                ),
+                decoration: InputDecoration(
+                  labelText: 'One-time code (TOTP URI or Secret)',
+                  hintText: _hasExistingOtp && !_otpLoaded && !_otpModified
+                      ? '•••••••• (Stored — tap Show to reveal)'
+                      : 'Enter secret key',
+                  prefixIcon: Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: TacticalTheme.textMuted,
                   ),
-                  IconButton(
-                    tooltip: 'Field Options',
-                    icon: Icon(
-                      Icons.more_horiz,
-                      size: 18,
-                      color: TacticalTheme.textSecondary,
-                    ),
-                    onPressed: () => _showFieldOptionsModal(),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: _showOtp ? 'Hide' : 'Show',
+                        icon: Icon(
+                          _showOtp ? Icons.visibility_off : Icons.visibility,
+                          size: 18,
+                        ),
+                        onPressed: _toggleShowOtp,
+                      ),
+                      IconButton(
+                        key: const ValueKey('remove_builtin_field_otp'),
+                        tooltip: 'Remove field',
+                        icon: Icon(
+                          Icons.remove_circle_outline,
+                          size: 17,
+                          color: TacticalTheme.crimsonDanger,
+                        ),
+                        onPressed: () => _removeBuiltInField('otp'),
+                      ),
+                      IconButton(
+                        key: const ValueKey('field_options_OTP'),
+                        tooltip: 'Field Options',
+                        icon: Icon(
+                          Icons.more_horiz,
+                          size: 18,
+                          color: TacticalTheme.textSecondary,
+                        ),
+                        onPressed: () =>
+                            _showFieldOptionsModal(builtInFieldKey: 'otp'),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 12),
+            const SizedBox(height: 12),
+          ],
 
           // Security question
-          TextFormField(
-            key: const ValueKey('entry_field_security_question'),
-            controller: _securityQuestion,
-            style: TacticalTheme.monoStyle(
-              fontSize: 12,
-              color: TacticalTheme.textPrimary,
-            ),
-            decoration: InputDecoration(
-              labelText: 'Security question',
-              prefixIcon: Icon(
-                Icons.drag_handle,
-                size: 16,
-                color: TacticalTheme.textMuted,
-              ),
-              suffixIcon: IconButton(
-                tooltip: 'Field Options',
-                icon: Icon(
-                  Icons.more_horiz,
-                  size: 18,
-                  color: TacticalTheme.textSecondary,
+          if (_visibleBuiltInFields.contains('security_question')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('security_question'),
+              TextFormField(
+                key: const ValueKey('entry_field_security_question'),
+                controller: _securityQuestion,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 12,
+                  color: TacticalTheme.textPrimary,
                 ),
-                onPressed: () => _showFieldOptionsModal(),
+                decoration: InputDecoration(
+                  labelText: _labelForBuiltIn('security_question'),
+                  prefixIcon: Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: TacticalTheme.textMuted,
+                  ),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        key: const ValueKey(
+                          'remove_builtin_field_security_question',
+                        ),
+                        tooltip: 'Remove field',
+                        icon: Icon(
+                          Icons.remove_circle_outline,
+                          size: 17,
+                          color: TacticalTheme.crimsonDanger,
+                        ),
+                        onPressed: () =>
+                            _removeBuiltInField('security_question'),
+                      ),
+                      IconButton(
+                        key: const ValueKey('field_options_SecurityQuestion'),
+                        tooltip: 'Field Options',
+                        icon: Icon(
+                          Icons.more_horiz,
+                          size: 18,
+                          color: TacticalTheme.textSecondary,
+                        ),
+                        onPressed: () => _showFieldOptionsModal(
+                          builtInFieldKey: 'security_question',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 12),
+            const SizedBox(height: 12),
+          ],
 
           // Security answer (Protected / Sensitive)
-          TextFormField(
-            key: const ValueKey('entry_field_security_answer'),
-            controller: _securityAnswer,
-            obscureText: !_showSecurityAnswer,
-            enableSuggestions: false,
-            autocorrect: false,
-            enableIMEPersonalizedLearning: false,
-            onChanged: (_) => _securityAnswerModified = true,
-            style: TacticalTheme.monoStyle(
-              fontSize: 12,
-              color: TacticalTheme.textPrimary,
-            ),
-            decoration: InputDecoration(
-              labelText: 'Security answer',
-              hintText: _hasExistingSecurityAnswer &&
-                      !_securityAnswerLoaded &&
-                      !_securityAnswerModified
-                  ? 'â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢ (Stored â€” tap Show to reveal)'
-                  : null,
-              prefixIcon: Icon(
-                Icons.drag_handle,
-                size: 16,
-                color: TacticalTheme.textMuted,
-              ),
-              suffixIcon: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: _showSecurityAnswer ? 'Hide' : 'Show',
-                    icon: Icon(
-                      _showSecurityAnswer
-                          ? Icons.visibility_off
-                          : Icons.visibility,
-                      size: 18,
-                    ),
-                    onPressed: _toggleShowSecurityAnswer,
+          if (_visibleBuiltInFields.contains('security_answer')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('security_answer'),
+              TextFormField(
+                key: const ValueKey('entry_field_security_answer'),
+                controller: _securityAnswer,
+                obscureText: !_showSecurityAnswer,
+                enableSuggestions: false,
+                autocorrect: false,
+                enableIMEPersonalizedLearning: false,
+                onChanged: (_) => _securityAnswerModified = true,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 12,
+                  color: TacticalTheme.textPrimary,
+                ),
+                decoration: InputDecoration(
+                  labelText: _labelForBuiltIn('security_answer'),
+                  hintText: _hasExistingSecurityAnswer &&
+                          !_securityAnswerLoaded &&
+                          !_securityAnswerModified
+                      ? '•••••••• (Stored — tap Show to reveal)'
+                      : null,
+                  prefixIcon: Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: TacticalTheme.textMuted,
                   ),
-                  IconButton(
-                    tooltip: 'Field Options',
-                    icon: Icon(
-                      Icons.more_horiz,
-                      size: 18,
-                      color: TacticalTheme.textSecondary,
-                    ),
-                    onPressed: () => _showFieldOptionsModal(),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: _showSecurityAnswer ? 'Hide' : 'Show',
+                        icon: Icon(
+                          _showSecurityAnswer
+                              ? Icons.visibility_off
+                              : Icons.visibility,
+                          size: 18,
+                        ),
+                        onPressed: _toggleShowSecurityAnswer,
+                      ),
+                      IconButton(
+                        key: const ValueKey(
+                          'remove_builtin_field_security_answer',
+                        ),
+                        tooltip: 'Remove field',
+                        icon: Icon(
+                          Icons.remove_circle_outline,
+                          size: 17,
+                          color: TacticalTheme.crimsonDanger,
+                        ),
+                        onPressed: () => _removeBuiltInField('security_answer'),
+                      ),
+                      IconButton(
+                        key: const ValueKey('field_options_SecurityAnswer'),
+                        tooltip: 'Field Options',
+                        icon: Icon(
+                          Icons.more_horiz,
+                          size: 18,
+                          color: TacticalTheme.textSecondary,
+                        ),
+                        onPressed: () => _showFieldOptionsModal(
+                          builtInFieldKey: 'security_answer',
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 16),
+            const SizedBox(height: 16),
+          ],
 
           // Dynamic User-Added Sections & Custom Fields (`Enpass_HV9F8dBiu5.png`, `Enpass_1xVwnTUhyR.png`)
           for (final sectionName in _sections.where(
@@ -2241,18 +2725,49 @@ class _EntryScreenState extends State<EntryScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  sectionName,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w800,
-                    color: TacticalTheme.textPrimary,
+                Expanded(
+                  child: Text(
+                    sectionName,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: TacticalTheme.textPrimary,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                TextButton.icon(
-                  icon: const Icon(Icons.add, size: 15),
-                  label: const Text('Add Field'),
-                  onPressed: () => _showFieldOptionsModal(),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextButton.icon(
+                      icon: const Icon(Icons.add, size: 15),
+                      label: const Text('Add Field'),
+                      onPressed: () =>
+                          _showFieldOptionsModal(targetSection: sectionName),
+                    ),
+                    IconButton(
+                      key: ValueKey('remove_section_$sectionName'),
+                      tooltip: 'Remove Section',
+                      icon: Icon(
+                        Icons.close,
+                        size: 16,
+                        color: TacticalTheme.textMuted,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          final toRemove = _customFields
+                              .where((f) => f.section == sectionName)
+                              .toList();
+                          for (final f in toRemove) {
+                            _customFields.remove(f);
+                            f.dispose();
+                          }
+                          _sections.remove(sectionName);
+                        });
+                        _toast('Section "$sectionName" removed.');
+                      },
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -2263,6 +2778,7 @@ class _EntryScreenState extends State<EntryScreen> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: TextFormField(
+                  key: ValueKey('custom_field_${cf.name}'),
                   controller: cf.controller,
                   obscureText: cf.sensitive && !cf.revealed,
                   maxLines: cf.fieldType == 'Multiline' && !cf.sensitive ? 3 : 1,
@@ -2277,7 +2793,7 @@ class _EntryScreenState extends State<EntryScreen> {
                   decoration: InputDecoration(
                     labelText: '${cf.name} (${cf.fieldType})',
                     hintText: cf.sensitive && !cf.loaded
-                        ? 'â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢ (Stored â€” tap Show to reveal)'
+                        ? '•••••••• (Stored — tap Show to reveal)'
                         : null,
                     prefixIcon: Icon(
                       Icons.drag_handle,
@@ -2325,6 +2841,22 @@ class _EntryScreenState extends State<EntryScreen> {
                           },
                         ),
                         IconButton(
+                          key: ValueKey('remove_custom_field_${cf.name}'),
+                          tooltip: 'Remove field',
+                          icon: Icon(
+                            Icons.remove_circle_outline,
+                            size: 17,
+                            color: TacticalTheme.crimsonDanger,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _customFields.remove(cf);
+                              cf.dispose();
+                            });
+                            _toast('Field "${cf.name}" deleted.');
+                          },
+                        ),
+                        IconButton(
                           tooltip: 'Field Options',
                           icon: Icon(
                             Icons.more_horiz,
@@ -2343,41 +2875,175 @@ class _EntryScreenState extends State<EntryScreen> {
             const SizedBox(height: 8),
           ],
 
-          // Notes
-          TextFormField(
-            controller: _notes,
-            maxLines: 3,
-            style: TacticalTheme.monoStyle(
-              fontSize: 12,
-              color: TacticalTheme.textPrimary,
+          // Inline Add Field / Add Section & Restore Pre-Present Fields Bar
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: TacticalTheme.bgSurface,
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: TacticalTheme.borderTech),
             ),
-            decoration: const InputDecoration(
-              labelText: 'Notes',
-              hintText: 'Add Note',
-              alignLabelWithHint: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    OutlinedButton.icon(
+                      key: const ValueKey('entry_inline_add_field_button'),
+                      icon: const Icon(Icons.playlist_add, size: 15),
+                      label: const Text('Add Field'),
+                      onPressed: () => _showFieldOptionsModal(),
+                    ),
+                    OutlinedButton.icon(
+                      key: const ValueKey('entry_inline_add_section_button'),
+                      icon: const Icon(Icons.view_agenda_outlined, size: 15),
+                      label: const Text('Add Section'),
+                      onPressed: _showAddSectionModal,
+                    ),
+                  ],
+                ),
+                if (kBuiltInFields.any(
+                  (f) => !_visibleBuiltInFields.contains(f.key),
+                )) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Removed Standard Fields (click to re-add):',
+                    style: TacticalTheme.monoStyle(
+                      fontSize: 10,
+                      color: TacticalTheme.textMuted,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final f in kBuiltInFields.where(
+                        (f) => !_visibleBuiltInFields.contains(f.key),
+                      ))
+                        ActionChip(
+                          key: ValueKey('restore_builtin_field_${f.key}'),
+                          avatar: Icon(
+                            Icons.add_circle_outline,
+                            size: 14,
+                            color: TacticalTheme.emeraldReady,
+                          ),
+                          label: Text(
+                            f.label,
+                            style: TacticalTheme.monoStyle(fontSize: 11),
+                          ),
+                          onPressed: () => _restoreBuiltInField(f.key),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
             ),
           ),
           const SizedBox(height: 14),
 
-          // Tags (`Enpass_HV9F8dBiu5.png`)
-          TextFormField(
-            key: const ValueKey('entry_field_tags'),
-            controller: _tagsCtrl,
-            style: TacticalTheme.monoStyle(
-              fontSize: 12,
-              color: TacticalTheme.amberBright,
-            ),
-            decoration: InputDecoration(
-              labelText: 'Tags',
-              hintText: 'e.g. Cards, Crypto, Email, Finance, Hosting',
-              prefixIcon: Icon(
-                Icons.sell_outlined,
-                size: 16,
-                color: TacticalTheme.amberPrimary,
+          // Notes
+          if (_visibleBuiltInFields.contains('notes')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('notes'),
+              TextFormField(
+                key: const ValueKey('entry_field_notes'),
+                controller: _notes,
+                maxLines: 3,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 12,
+                  color: TacticalTheme.textPrimary,
+                ),
+                decoration: InputDecoration(
+                  labelText: _labelForBuiltIn('notes'),
+                  hintText: 'Add Note',
+                  alignLabelWithHint: true,
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        key: const ValueKey('remove_builtin_field_notes'),
+                        tooltip: 'Remove field',
+                        icon: Icon(
+                          Icons.remove_circle_outline,
+                          size: 17,
+                          color: TacticalTheme.crimsonDanger,
+                        ),
+                        onPressed: () => _removeBuiltInField('notes'),
+                      ),
+                      IconButton(
+                        key: const ValueKey('field_options_Notes'),
+                        tooltip: 'Field Options',
+                        icon: Icon(
+                          Icons.more_horiz,
+                          size: 18,
+                          color: TacticalTheme.textSecondary,
+                        ),
+                        onPressed: () =>
+                            _showFieldOptionsModal(builtInFieldKey: 'notes'),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 16),
+            const SizedBox(height: 14),
+          ],
+
+          // Tags (`Enpass_HV9F8dBiu5.png`)
+          if (_visibleBuiltInFields.contains('tags')) ...[
+            _buildFieldRow(
+              isWideForm,
+              _labelForBuiltIn('tags'),
+              TextFormField(
+                key: const ValueKey('entry_field_tags'),
+                controller: _tagsCtrl,
+                style: TacticalTheme.monoStyle(
+                  fontSize: 12,
+                  color: TacticalTheme.amberBright,
+                ),
+                decoration: InputDecoration(
+                  labelText: _labelForBuiltIn('tags'),
+                  hintText: 'e.g. Cards, Crypto, Email, Finance, Hosting',
+                  prefixIcon: Icon(
+                    Icons.sell_outlined,
+                    size: 16,
+                    color: TacticalTheme.amberPrimary,
+                  ),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        key: const ValueKey('remove_builtin_field_tags'),
+                        tooltip: 'Remove field',
+                        icon: Icon(
+                          Icons.remove_circle_outline,
+                          size: 17,
+                          color: TacticalTheme.crimsonDanger,
+                        ),
+                        onPressed: () => _removeBuiltInField('tags'),
+                      ),
+                      IconButton(
+                        key: const ValueKey('field_options_Tags'),
+                        tooltip: 'Field Options',
+                        icon: Icon(
+                          Icons.more_horiz,
+                          size: 18,
+                          color: TacticalTheme.textSecondary,
+                        ),
+                        onPressed: () =>
+                            _showFieldOptionsModal(builtInFieldKey: 'tags'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
 
           // Enpass Attachments Box + Drag-and-Drop / Click Zone (`Enpass_HV9F8dBiu5.png`)
           Container(
@@ -2590,9 +3256,11 @@ class _EntryScreenState extends State<EntryScreen> {
                   )
                 : const Text('Save'),
           ),
-        ],
-        ),
-      ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -2604,9 +3272,9 @@ class _EntryScreenState extends State<EntryScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Inspector Header Bar (`Enpass_RUtKiX9m54.png` + `Enpass_AnOaTZCopB.png`)
+            // Semi-Window Header Bar (`media_1791754823466_415d87e6.png`)
             Container(
-              height: 42,
+              height: 44,
               padding: const EdgeInsets.symmetric(horizontal: 10),
               decoration: BoxDecoration(
                 color: TacticalTheme.bgSurface,
@@ -2616,6 +3284,33 @@ class _EntryScreenState extends State<EntryScreen> {
               ),
               child: Row(
                 children: [
+                  InkWell(
+                    key: const ValueKey('entry_button_cancel'),
+                    onTap: () => widget.onCancel?.call(),
+                    borderRadius: BorderRadius.circular(4),
+                    child: Container(
+                      height: 30,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: TacticalTheme.bgElevated,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: TacticalTheme.borderTech,
+                          width: 1,
+                        ),
+                      ),
+                      child: Text(
+                        'Cancel',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: TacticalTheme.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
                   Icon(
                     Icons.verified_user_outlined,
                     size: 15,

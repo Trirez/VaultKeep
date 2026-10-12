@@ -26,10 +26,176 @@ class VaultScreen extends StatefulWidget {
 class _VaultScreenState extends State<VaultScreen> {
   String? _selectedEntryId;
   bool _creatingNewInInspector = false;
+  bool _inspectorDismissed = false;
   int _newEntryNonce = 0;
   String? _newEntryCategory;
+  String? _openDropdownKey;
+  String? _hoveredOptionKey;
+  OverlayEntry? _dropdownOverlayEntry;
+  final Map<String, GlobalKey> _dropdownAnchorKeys = {};
+  final Map<String, VoidCallback> _dropdownOpeners = {};
 
   VaultController get controller => widget.controller;
+
+  @override
+  void dispose() {
+    _dropdownOverlayEntry?.remove();
+    _dropdownOverlayEntry = null;
+    super.dispose();
+  }
+
+  GlobalKey _anchorKeyFor(String menuKey) =>
+      _dropdownAnchorKeys.putIfAbsent(menuKey, () => GlobalKey());
+
+  void _closeDropdown({bool rebuild = true}) {
+    _dropdownOverlayEntry?.remove();
+    _dropdownOverlayEntry = null;
+    if (_openDropdownKey != null) {
+      _openDropdownKey = null;
+      if (rebuild && mounted) {
+        setState(() {});
+      }
+    }
+  }
+
+  void _toggleDropdown(String menuKey) {
+    if (_openDropdownKey == menuKey) {
+      _closeDropdown();
+    } else {
+      _dropdownOpeners[menuKey]?.call();
+    }
+  }
+
+  void _handleOutsideDropdownTap(Offset globalPosition) {
+    for (final entry in _dropdownAnchorKeys.entries) {
+      final key = entry.key;
+      final box = entry.value.currentContext?.findRenderObject() as RenderBox?;
+      if (box != null && box.attached) {
+        final rect = box.localToGlobal(Offset.zero) & box.size;
+        if (rect.contains(globalPosition)) {
+          if (key == _openDropdownKey) {
+            _closeDropdown();
+          } else {
+            _dropdownOpeners[key]?.call();
+          }
+          return;
+        }
+      }
+    }
+    _closeDropdown();
+  }
+
+  void _showDropdownOverlay<T>({
+    required BuildContext context,
+    required String menuKey,
+    required List<PopupMenuEntry<T>> Function(BuildContext) itemBuilder,
+    required double menuWidth,
+    ValueChanged<T>? onSelected,
+    Offset offset = const Offset(0, 4),
+  }) {
+    _dropdownOverlayEntry?.remove();
+    _dropdownOverlayEntry = null;
+
+    final anchorKey = _anchorKeyFor(menuKey);
+    final renderBox =
+        anchorKey.currentContext?.findRenderObject() as RenderBox?;
+    final overlayState = Overlay.maybeOf(context);
+    if (renderBox == null || !renderBox.attached || overlayState == null) {
+      return;
+    }
+    final overlayBox =
+        overlayState.context.findRenderObject() as RenderBox?;
+    final screenSize = overlayBox?.size ?? const Size(1920, 1080);
+    final buttonTopLeft = renderBox.localToGlobal(
+      Offset.zero,
+      ancestor: overlayBox,
+    );
+    final buttonSize = renderBox.size;
+
+    final left = (buttonTopLeft.dx + offset.dx).clamp(
+      8.0,
+      (screenSize.width - menuWidth - 8.0).clamp(8.0, screenSize.width),
+    );
+    final top = buttonTopLeft.dy + buttonSize.height + offset.dy;
+    final maxMenuHeight =
+        (screenSize.height - top - 12.0).clamp(120.0, screenSize.height - 24.0);
+
+    final entries = itemBuilder(context);
+
+    _openDropdownKey = menuKey;
+    _dropdownOverlayEntry = OverlayEntry(
+      builder: (overlayCtx) => Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTapDown: (details) =>
+                  _handleOutsideDropdownTap(details.globalPosition),
+            ),
+          ),
+          Positioned(
+            left: left,
+            top: top,
+            width: menuWidth,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (_) {},
+              child: Material(
+                elevation: 8,
+                color: TacticalTheme.bgElevated,
+                surfaceTintColor: Colors.transparent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(6),
+                  side: BorderSide(color: TacticalTheme.borderSubtle, width: 1),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxMenuHeight),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (final entry in entries)
+                          if (entry is PopupMenuDivider)
+                            Divider(
+                              height: entry.height,
+                              thickness: 1,
+                              color: TacticalTheme.borderSubtle,
+                            )
+                          else if (entry is PopupMenuItem<T>)
+                            _HoverDropdownItem(
+                              key: entry.key,
+                              height: entry.height,
+                              enabled: entry.enabled,
+                              onTap: entry.enabled
+                                  ? () {
+                                      final val = entry.value;
+                                      _closeDropdown();
+                                      if (val != null) {
+                                        onSelected?.call(val);
+                                      }
+                                    }
+                                  : null,
+                              child: entry.child,
+                            ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    overlayState.insert(_dropdownOverlayEntry!);
+    if (mounted) {
+      setState(() {});
+    }
+  }
 
   static IconData _iconForCategory(String category) {
     switch (category.toLowerCase()) {
@@ -260,6 +426,7 @@ class _VaultScreenState extends State<VaultScreen> {
         controller.closeHomeDashboard();
       }
       setState(() {
+        _inspectorDismissed = false;
         if (id == null) {
           _creatingNewInInspector = true;
           _selectedEntryId = null;
@@ -1497,6 +1664,7 @@ class _VaultScreenState extends State<VaultScreen> {
           final newId = await controller.duplicateEntry(activeItem.id);
           if (mounted) {
             setState(() {
+              _inspectorDismissed = false;
               _creatingNewInInspector = false;
               _selectedEntryId = newId;
             });
@@ -1829,34 +1997,198 @@ class _VaultScreenState extends State<VaultScreen> {
     required List<PopupMenuEntry<String>> Function(BuildContext) itemBuilder,
     String? activeInspectorId,
   }) {
-    return PopupMenuButton<String>(
-      key: ValueKey(menuKey),
-      tooltip: '$label menu',
-      position: PopupMenuPosition.under,
-      offset: const Offset(0, 4),
-      color: TacticalTheme.bgElevated,
-      surfaceTintColor: Colors.transparent,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(6),
-        side: BorderSide(color: TacticalTheme.borderSubtle, width: 1),
-      ),
-      onSelected: (action) =>
-          unawaited(_handleTopMenuAction(context, action, activeInspectorId)),
-      itemBuilder: itemBuilder,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
-            color: TacticalTheme.textSecondary,
+    final anchorKey = _anchorKeyFor(menuKey);
+    final isOpen = _openDropdownKey == menuKey;
+    final isHovered = _hoveredOptionKey == menuKey;
+    _dropdownOpeners[menuKey] = () {
+      _showDropdownOverlay<String>(
+        context: context,
+        menuKey: menuKey,
+        itemBuilder: itemBuilder,
+        menuWidth: 256,
+        onSelected: (action) =>
+            unawaited(_handleTopMenuAction(context, action, activeInspectorId)),
+      );
+    };
+
+    return Tooltip(
+      message: '$label menu',
+      child: InkWell(
+        key: ValueKey(menuKey),
+        borderRadius: BorderRadius.circular(4),
+        onHover: (v) => setState(() {
+          if (v) {
+            _hoveredOptionKey = menuKey;
+          } else if (_hoveredOptionKey == menuKey) {
+            _hoveredOptionKey = null;
+          }
+        }),
+        onTap: () => _toggleDropdown(menuKey),
+        child: Container(
+          key: anchorKey,
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          decoration: BoxDecoration(
+            color: (isOpen || isHovered)
+                ? TacticalTheme.bgHover
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(
+              color: (isOpen || isHovered)
+                  ? TacticalTheme.hoverBorderColor
+                  : Colors.transparent,
+              width: 1,
+            ),
+            boxShadow: isHovered ? TacticalTheme.borderGlow : null,
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: isOpen ? FontWeight.w700 : FontWeight.w500,
+              color: (isOpen || isHovered)
+                  ? TacticalTheme.amberBright
+                  : TacticalTheme.textSecondary,
+              shadows: isHovered ? TacticalTheme.textGlow : null,
+            ),
           ),
         ),
       ),
     );
   }
 
+  Widget _buildNewItemTopDropdown(BuildContext context) {
+    const menuKey = 'vault_button_new_item_top';
+    final anchorKey = _anchorKeyFor(menuKey);
+    final isHovered = _hoveredOptionKey == menuKey;
+    final isOpen = _openDropdownKey == menuKey;
+    _dropdownOpeners[menuKey] = () {
+      _openEntry(context, isDesktop: true);
+      _showDropdownOverlay<String>(
+        context: context,
+        menuKey: menuKey,
+        menuWidth: 215,
+        onSelected: (val) {
+          if (val == '__group__') {
+            _createGroup(context);
+          } else {
+            _openEntry(context, category: val, isDesktop: true);
+          }
+        },
+        itemBuilder: (ctx) => [
+          for (final cat in kEnpassCategories)
+            PopupMenuItem<String>(
+              key: ValueKey('new_item_category_$cat'),
+              value: cat,
+              height: 36,
+              child: Row(
+                children: [
+                  Icon(
+                    _iconForCategory(cat),
+                    size: 16,
+                    color: TacticalTheme.amberPrimary,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'New $cat',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: TacticalTheme.textPrimary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const PopupMenuDivider(height: 8),
+          PopupMenuItem<String>(
+            key: const ValueKey('new_item_group'),
+            value: '__group__',
+            height: 36,
+            child: Row(
+              children: [
+                Icon(
+                  Icons.create_new_folder_outlined,
+                  size: 16,
+                  color: TacticalTheme.cyanTactical,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'New Group...',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: TacticalTheme.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    };
+
+    return Tooltip(
+      message: 'Create New Item',
+      child: InkWell(
+        key: const ValueKey(menuKey),
+        borderRadius: BorderRadius.circular(4),
+        onHover: (v) => setState(() {
+          if (v) {
+            _hoveredOptionKey = menuKey;
+          } else if (_hoveredOptionKey == menuKey) {
+            _hoveredOptionKey = null;
+          }
+        }),
+        onTap: () => _toggleDropdown(menuKey),
+        child: Container(
+          key: anchorKey,
+          height: 30,
+          padding: const EdgeInsets.symmetric(horizontal: 9),
+          decoration: BoxDecoration(
+            color: (isHovered || isOpen)
+                ? TacticalTheme.amberBright
+                : TacticalTheme.amberPrimary,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(
+              color: (isHovered || isOpen)
+                  ? TacticalTheme.textPrimary.withValues(alpha: 0.7)
+                  : Colors.transparent,
+              width: 1,
+            ),
+            boxShadow: isHovered ? TacticalTheme.borderGlow : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.add,
+                size: 15,
+                color: TacticalTheme.bgDeepCarbon,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                'New Item',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: TacticalTheme.bgDeepCarbon,
+                  shadows: isHovered ? TacticalTheme.textGlow : null,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Icon(
+                Icons.keyboard_arrow_down,
+                size: 15,
+                color: TacticalTheme.bgDeepCarbon,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
   Widget _buildTopTelemetryBar(
     BuildContext context,
     bool isWide, [
@@ -2164,101 +2496,7 @@ class _VaultScreenState extends State<VaultScreen> {
             ),
           if (isWide) ...[
             // Enpass `+ New Item | v` Top Action Button (`Enpass_UNGNDpANfa.png`)
-            PopupMenuButton<String>(
-              key: const ValueKey('vault_button_new_item_top'),
-              tooltip: 'Create New Item',
-              position: PopupMenuPosition.under,
-              offset: const Offset(0, 4),
-              onOpened: () => _openEntry(context, isDesktop: true),
-              onSelected: (val) {
-                if (val == '__group__') {
-                  _createGroup(context);
-                } else {
-                  _openEntry(context, category: val, isDesktop: true);
-                }
-              },
-              itemBuilder: (ctx) => [
-                for (final cat in kEnpassCategories)
-                  PopupMenuItem<String>(
-                    key: ValueKey('new_item_category_$cat'),
-                    value: cat,
-                    height: 36,
-                    child: Row(
-                      children: [
-                        Icon(
-                          _iconForCategory(cat),
-                          size: 16,
-                          color: TacticalTheme.amberPrimary,
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          'New $cat',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: TacticalTheme.textPrimary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                const PopupMenuDivider(),
-                PopupMenuItem<String>(
-                  key: const ValueKey('new_item_group'),
-                  value: '__group__',
-                  height: 36,
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.create_new_folder_outlined,
-                        size: 16,
-                        color: TacticalTheme.cyanTactical,
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        'New Group...',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: TacticalTheme.textPrimary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-              child: Container(
-                height: 30,
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                decoration: BoxDecoration(
-                  color: TacticalTheme.amberPrimary,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.add,
-                      size: 15,
-                      color: TacticalTheme.bgDeepCarbon,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      'New Item',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: TacticalTheme.bgDeepCarbon,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Icon(
-                      Icons.keyboard_arrow_down,
-                      size: 15,
-                      color: TacticalTheme.bgDeepCarbon,
-                    ),
-                  ],
-                ),
-              ),
-            ),
+            _buildNewItemTopDropdown(context),
             const SizedBox(width: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -2290,65 +2528,67 @@ class _VaultScreenState extends State<VaultScreen> {
             ),
             const SizedBox(width: 6),
           ],
-          IconButton(
-            key: const ValueKey('vault_button_password_generator'),
-            tooltip: 'Password Generator',
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(6),
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-            icon: Icon(
-              Icons.password,
-              size: 19,
-              color: TacticalTheme.amberBright,
+          if (!isWide) ...[
+            IconButton(
+              key: const ValueKey('vault_button_password_generator'),
+              tooltip: 'Password Generator',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+              icon: Icon(
+                Icons.password,
+                size: 19,
+                color: TacticalTheme.amberBright,
+              ),
+              onPressed: () => PasswordGeneratorDialog.show(
+                context,
+                controller: controller,
+              ),
             ),
-            onPressed: () => PasswordGeneratorDialog.show(
-              context,
-              controller: controller,
+            IconButton(
+              tooltip: 'Autofill Query',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+              icon: Icon(
+                Icons.auto_mode,
+                size: 19,
+                color: TacticalTheme.cyanTactical,
+              ),
+              onPressed: () => _showAutofillModal(context),
             ),
-          ),
-          IconButton(
-            tooltip: 'Autofill Query',
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(6),
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-            icon: Icon(
-              Icons.auto_mode,
-              size: 19,
-              color: TacticalTheme.cyanTactical,
+            IconButton(
+              key: const ValueKey('vault_button_rotate_password'),
+              tooltip: 'Rotate Master Password',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+              icon: Icon(
+                Icons.vpn_key_outlined,
+                size: 19,
+                color: TacticalTheme.amberPrimary,
+              ),
+              onPressed: () => _changeMasterPassword(context),
             ),
-            onPressed: () => _showAutofillModal(context),
-          ),
-          IconButton(
-            key: const ValueKey('vault_button_rotate_password'),
-            tooltip: 'Rotate Master Password',
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(6),
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-            icon: Icon(
-              Icons.vpn_key_outlined,
-              size: 19,
-              color: TacticalTheme.amberPrimary,
+            IconButton(
+              key: const ValueKey('vault_button_settings'),
+              tooltip: 'Settings',
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+              icon: Icon(
+                Icons.settings_outlined,
+                size: 19,
+                color: TacticalTheme.textPrimary,
+              ),
+              onPressed: () => EnpassSettingsDialog.show(
+                context,
+                controller: controller,
+                onChangeMasterPassword: () => _changeMasterPassword(context),
+                onSyncVault: () => _syncVault(context),
+              ),
             ),
-            onPressed: () => _changeMasterPassword(context),
-          ),
-          IconButton(
-            key: const ValueKey('vault_button_settings'),
-            tooltip: 'Settings',
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(6),
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-            icon: Icon(
-              Icons.settings_outlined,
-              size: 19,
-              color: TacticalTheme.textPrimary,
-            ),
-            onPressed: () => EnpassSettingsDialog.show(
-              context,
-              controller: controller,
-              onChangeMasterPassword: () => _changeMasterPassword(context),
-              onSyncVault: () => _syncVault(context),
-            ),
-          ),
+          ],
           if (isWide)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -2513,9 +2753,10 @@ class _VaultScreenState extends State<VaultScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 IconButton(
                   tooltip: 'New Credential',
+                  visualDensity: VisualDensity.compact,
                   icon: Icon(
                     Icons.note_add_outlined,
                     size: 18,
@@ -2525,6 +2766,7 @@ class _VaultScreenState extends State<VaultScreen> {
                 ),
                 IconButton(
                   tooltip: 'New Group',
+                  visualDensity: VisualDensity.compact,
                   icon: Icon(
                     Icons.create_new_folder_outlined,
                     size: 18,
@@ -2533,11 +2775,49 @@ class _VaultScreenState extends State<VaultScreen> {
                   onPressed: () => _createGroup(context),
                 ),
                 IconButton(
+                  key: const ValueKey('vault_button_password_generator'),
+                  tooltip: 'Password Generator',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                    Icons.password,
+                    size: 18,
+                    color: TacticalTheme.amberBright,
+                  ),
+                  onPressed: () => PasswordGeneratorDialog.show(
+                    context,
+                    controller: controller,
+                  ),
+                ),
+                IconButton(
+                  key: const ValueKey('vault_button_autofill_query'),
+                  tooltip: 'Autofill Query',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                    Icons.auto_mode,
+                    size: 18,
+                    color: TacticalTheme.cyanTactical,
+                  ),
+                  onPressed: () => _showAutofillModal(context),
+                ),
+                IconButton(
+                  key: const ValueKey('vault_button_rotate_password'),
+                  tooltip: 'Rotate Master Password',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                    Icons.vpn_key_outlined,
+                    size: 18,
+                    color: TacticalTheme.amberPrimary,
+                  ),
+                  onPressed: () => _changeMasterPassword(context),
+                ),
+                IconButton(
+                  key: const ValueKey('vault_button_settings'),
                   tooltip: 'Settings',
+                  visualDensity: VisualDensity.compact,
                   icon: Icon(
                     Icons.settings_outlined,
                     size: 18,
-                    color: TacticalTheme.textSecondary,
+                    color: TacticalTheme.textPrimary,
                   ),
                   onPressed: () => EnpassSettingsDialog.show(
                     context,
@@ -2550,6 +2830,7 @@ class _VaultScreenState extends State<VaultScreen> {
                 const Spacer(),
                 IconButton(
                   tooltip: 'Lock Vault',
+                  visualDensity: VisualDensity.compact,
                   icon: Icon(
                     Icons.logout,
                     size: 18,
@@ -3082,26 +3363,54 @@ class _VaultScreenState extends State<VaultScreen> {
     required bool isDesktop,
   }) {
     final groupLabel = _resolveGroupLabel(item, groups);
+    final rowKey = 'vault_row_${item.id}';
+    final isHovered = _hoveredOptionKey == rowKey;
 
     return InkWell(
-      key: ValueKey('vault_row_${item.id}'),
+      key: ValueKey(rowKey),
+      onHover: (v) => setState(() {
+        if (v) {
+          _hoveredOptionKey = rowKey;
+        } else if (_hoveredOptionKey == rowKey) {
+          _hoveredOptionKey = null;
+        }
+      }),
       onTap: () => _openEntry(context, id: item.id, isDesktop: isDesktop),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        padding: const EdgeInsets.fromLTRB(12, 9, 11, 10),
         decoration: BoxDecoration(
-          color: isSelected ? TacticalTheme.bgHover : Colors.transparent,
+          color: (isSelected || isHovered)
+              ? TacticalTheme.bgHover
+              : Colors.transparent,
           border: Border(
             left: BorderSide(
               color: isSelected
                   ? TacticalTheme.amberPrimary
-                  : Colors.transparent,
+                  : (isHovered
+                      ? TacticalTheme.hoverBorderColor
+                      : Colors.transparent),
               width: 3,
             ),
+            top: BorderSide(
+              color: isHovered
+                  ? TacticalTheme.hoverBorderColor
+                  : Colors.transparent,
+              width: 1,
+            ),
+            right: BorderSide(
+              color: isHovered
+                  ? TacticalTheme.hoverBorderColor
+                  : Colors.transparent,
+              width: 1,
+            ),
             bottom: BorderSide(
-              color: TacticalTheme.borderSubtle,
+              color: isHovered
+                  ? TacticalTheme.hoverBorderColor
+                  : TacticalTheme.borderSubtle,
               width: 1,
             ),
           ),
+          boxShadow: isHovered ? TacticalTheme.borderGlow : null,
         ),
         child: Row(
           children: [
@@ -3125,7 +3434,10 @@ class _VaultScreenState extends State<VaultScreen> {
                           style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
-                            color: TacticalTheme.textPrimary,
+                            color: isHovered
+                                ? TacticalTheme.amberBright
+                                : TacticalTheme.textPrimary,
+                            shadows: isHovered ? TacticalTheme.textGlow : null,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -3546,29 +3858,39 @@ class _VaultScreenState extends State<VaultScreen> {
             ),
           ),
           child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              InkWell(
-                key: const ValueKey('vault_button_sort_title'),
-                onTap: () => controller.setSort(VaultSortField.title),
-                child: Text(
-                  'Sort By: Title ${controller.sortAscending ? "â–²" : "â–¼"}',
-                  style: TacticalTheme.monoStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: TacticalTheme.textSecondary,
+              Flexible(
+                child: InkWell(
+                  key: const ValueKey('vault_button_sort_title'),
+                  onTap: () => controller.setSort(VaultSortField.title),
+                  child: Text(
+                    'Sort By: Title ${controller.sortAscending ? "▲" : "▼"}',
+                    style: TacticalTheme.monoStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: TacticalTheme.textSecondary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ),
-              const Spacer(),
-              if (!controller.showHomeDashboard)
-                Text(
-                  'Instant Copy Trigger',
-                  style: TacticalTheme.monoStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: TacticalTheme.textSecondary,
+              if (!controller.showHomeDashboard) ...[
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    'Instant Copy Trigger',
+                    style: TacticalTheme.monoStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: TacticalTheme.textSecondary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
+              ],
             ],
           ),
         ),
@@ -3603,12 +3925,17 @@ class _VaultScreenState extends State<VaultScreen> {
             final isWideBar = constraints.maxWidth >= 680;
 
             String? activeInspectorId = _selectedEntryId;
-            if (isDesktop && !_creatingNewInInspector) {
+            if (isDesktop && !_creatingNewInInspector && !_inspectorDismissed) {
               if (activeInspectorId == null ||
                   !items.any((e) => e.id == activeInspectorId)) {
                 activeInspectorId = items.isNotEmpty ? items.first.id : null;
               }
+            } else if (_inspectorDismissed) {
+              activeInspectorId = null;
             }
+            final showEntrySemiWindow = isDesktop &&
+                !controller.showHomeDashboard &&
+                (_creatingNewInInspector || activeInspectorId != null);
 
             return CallbackShortcuts(
               bindings: <ShortcutActivator, VoidCallback>{
@@ -3830,6 +4157,7 @@ class _VaultScreenState extends State<VaultScreen> {
                                     )
                                   else
                                     Expanded(
+                                      flex: 4,
                                       child: _buildCenterItemListColumn(
                                         context,
                                         items,
@@ -3838,54 +4166,65 @@ class _VaultScreenState extends State<VaultScreen> {
                                       ),
                                     ),
 
-                                  // Right Pane: Either Enpass Home Security Score Dashboard OR Cryptographic Entry Inspector
+                                  // Right Pane: Either Enpass Home Security Score Dashboard OR Enpass Entry Semi-Window (`media_1791754823466_415d87e6.png`)
                                   if (controller.showHomeDashboard)
                                     Expanded(
                                       child: HomeDashboardPane(
                                         controller: controller,
                                       ),
                                     )
-                                  else
-                                    Container(
-                                      width: 390,
-                                      decoration: BoxDecoration(
-                                        border: Border(
-                                          left: BorderSide(
-                                            color: TacticalTheme.borderTech,
-                                            width: 1,
+                                  else if (showEntrySemiWindow)
+                                    Expanded(
+                                      flex: 6,
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          border: Border(
+                                            left: BorderSide(
+                                              color: TacticalTheme.borderTech,
+                                              width: 1,
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                      child: EntryScreen(
-                                        key: ValueKey(
-                                          _creatingNewInInspector
-                                              ? 'new_entry_$_newEntryNonce'
-                                              : (activeInspectorId ??
-                                                  'empty_$_newEntryNonce'),
+                                        child: EntryScreen(
+                                          key: ValueKey(
+                                            _creatingNewInInspector
+                                                ? 'new_entry_$_newEntryNonce'
+                                                : (activeInspectorId ??
+                                                    'empty_$_newEntryNonce'),
+                                          ),
+                                          controller: controller,
+                                          entryId: _creatingNewInInspector
+                                              ? null
+                                              : activeInspectorId,
+                                          initialCategory: _creatingNewInInspector
+                                              ? _newEntryCategory
+                                              : null,
+                                          autofocusTitle: _creatingNewInInspector,
+                                          isEmbedded: true,
+                                          onCancel: () {
+                                            setState(() {
+                                              _creatingNewInInspector = false;
+                                              _newEntryCategory = null;
+                                              _selectedEntryId = null;
+                                              _inspectorDismissed = true;
+                                            });
+                                          },
+                                          onSaved: (savedId) {
+                                            setState(() {
+                                              _creatingNewInInspector = false;
+                                              _newEntryCategory = null;
+                                              _selectedEntryId = savedId;
+                                              _inspectorDismissed = false;
+                                            });
+                                          },
+                                          onDeleted: () {
+                                            setState(() {
+                                              _selectedEntryId = null;
+                                              _creatingNewInInspector = false;
+                                              _newEntryCategory = null;
+                                            });
+                                          },
                                         ),
-                                        controller: controller,
-                                        entryId: _creatingNewInInspector
-                                            ? null
-                                            : activeInspectorId,
-                                        initialCategory: _creatingNewInInspector
-                                            ? _newEntryCategory
-                                            : null,
-                                        autofocusTitle: _creatingNewInInspector,
-                                        isEmbedded: true,
-                                        onSaved: (savedId) {
-                                          setState(() {
-                                            _creatingNewInInspector = false;
-                                            _newEntryCategory = null;
-                                            _selectedEntryId = savedId;
-                                          });
-                                        },
-                                        onDeleted: () {
-                                          setState(() {
-                                            _selectedEntryId = null;
-                                            _creatingNewInInspector = false;
-                                            _newEntryCategory = null;
-                                          });
-                                        },
                                       ),
                                     ),
                                 ],
@@ -4051,7 +4390,7 @@ class _VaultScreenState extends State<VaultScreen> {
   }
 }
 
-class _GroupTreeTile extends StatelessWidget {
+class _GroupTreeTile extends StatefulWidget {
   const _GroupTreeTile({
     super.key,
     required this.name,
@@ -4070,59 +4409,99 @@ class _GroupTreeTile extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_GroupTreeTile> createState() => _GroupTreeTileState();
+}
+
+class _GroupTreeTileState extends State<_GroupTreeTile> {
+  bool _hovered = false;
+
+  @override
   Widget build(BuildContext context) {
+    final selected = widget.selected;
     return InkWell(
-      onTap: onTap,
+      onHover: (v) => setState(() => _hovered = v),
+      onTap: widget.onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3.5),
+        padding: const EdgeInsets.fromLTRB(10, 2.5, 9, 2.5),
         decoration: BoxDecoration(
-          color: selected ? TacticalTheme.bgElevated : Colors.transparent,
+          color: selected
+              ? TacticalTheme.bgElevated
+              : (_hovered ? TacticalTheme.bgHover : Colors.transparent),
           border: Border(
             left: BorderSide(
-              color: selected ? TacticalTheme.amberPrimary : Colors.transparent,
+              color: selected
+                  ? TacticalTheme.amberPrimary
+                  : (_hovered
+                      ? TacticalTheme.hoverBorderColor
+                      : Colors.transparent),
               width: 3,
             ),
+            top: BorderSide(
+              color: _hovered
+                  ? TacticalTheme.hoverBorderColor
+                  : Colors.transparent,
+              width: 1,
+            ),
+            right: BorderSide(
+              color: _hovered
+                  ? TacticalTheme.hoverBorderColor
+                  : Colors.transparent,
+              width: 1,
+            ),
+            bottom: BorderSide(
+              color: _hovered
+                  ? TacticalTheme.hoverBorderColor
+                  : Colors.transparent,
+              width: 1,
+            ),
           ),
+          boxShadow: _hovered ? TacticalTheme.borderGlow : null,
         ),
         child: Row(
           children: [
             Icon(
               Icons.chevron_right,
               size: 13,
-              color: selected
+              color: (selected || _hovered)
                   ? TacticalTheme.amberPrimary
                   : TacticalTheme.textMuted,
             ),
             const SizedBox(width: 4),
             Icon(
-              icon,
+              widget.icon,
               size: 15,
-              color: selected
+              color: (selected || _hovered)
                   ? TacticalTheme.amberPrimary
                   : TacticalTheme.cyanTactical,
+              shadows: _hovered ? TacticalTheme.textGlow : null,
             ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                name,
+                widget.name,
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                  color: selected
-                      ? TacticalTheme.textPrimary
-                      : TacticalTheme.textSecondary,
+                  color: _hovered
+                      ? TacticalTheme.amberBright
+                      : (selected
+                          ? TacticalTheme.textPrimary
+                          : TacticalTheme.textSecondary),
+                  shadows: _hovered ? TacticalTheme.textGlow : null,
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            if (showCount)
+            if (widget.showCount)
               Text(
-                '($count)',
+                '(${widget.count})',
                 style: TacticalTheme.monoStyle(
                   fontSize: 11,
-                  color: selected
+                  color: (selected || _hovered)
                       ? TacticalTheme.amberBright
                       : TacticalTheme.textMuted,
+                ).copyWith(
+                  shadows: _hovered ? TacticalTheme.textGlow : null,
                 ),
               ),
           ],
@@ -4131,3 +4510,63 @@ class _GroupTreeTile extends StatelessWidget {
     );
   }
 }
+
+class _HoverDropdownItem extends StatefulWidget {
+  const _HoverDropdownItem({
+    super.key,
+    required this.height,
+    required this.enabled,
+    required this.onTap,
+    required this.child,
+  });
+
+  final double height;
+  final bool enabled;
+  final VoidCallback? onTap;
+  final Widget? child;
+
+  @override
+  State<_HoverDropdownItem> createState() => _HoverDropdownItemState();
+}
+
+class _HoverDropdownItemState extends State<_HoverDropdownItem> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final activeHover = widget.enabled && _hovered;
+    return InkWell(
+      onHover: widget.enabled ? (v) => setState(() => _hovered = v) : null,
+      onTap: widget.onTap,
+      child: Container(
+        height: widget.height,
+        padding: const EdgeInsets.symmetric(horizontal: 13),
+        alignment: Alignment.centerLeft,
+        decoration: BoxDecoration(
+          color: activeHover ? TacticalTheme.bgHover : Colors.transparent,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: activeHover
+                ? TacticalTheme.hoverBorderColor
+                : Colors.transparent,
+            width: 1,
+          ),
+          boxShadow: activeHover ? TacticalTheme.borderGlow : null,
+        ),
+        child: DefaultTextStyle.merge(
+          style: TextStyle(
+            color: activeHover ? TacticalTheme.amberBright : null,
+            shadows: activeHover ? TacticalTheme.textGlow : null,
+          ),
+          child: IconTheme.merge(
+            data: IconThemeData(
+              shadows: activeHover ? TacticalTheme.textGlow : null,
+            ),
+            child: widget.child ?? const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
