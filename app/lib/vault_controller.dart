@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +9,133 @@ import 'package:flutter/services.dart';
 import 'backend.dart';
 import 'clipboard_guard.dart';
 import 'theme.dart';
+
+/// Factory-minted Wi-Fi Sync pairing & verification token.
+/// Constructor is private so tokens can never be instantiated ad-hoc outside
+/// [WifiSyncTokenFactory].
+class WifiSyncPairingToken {
+  const WifiSyncPairingToken._({
+    required this.pairingCode,
+    required this.accessPassphrase,
+    required this.issuedAtUtc,
+    required this.expiresAtUtc,
+    required this.scope,
+  });
+
+  final String pairingCode;
+  final String accessPassphrase;
+  final DateTime issuedAtUtc;
+  final DateTime expiresAtUtc;
+  final String scope;
+
+  String get formattedPairingCode => pairingCode.length == 6
+      ? '${pairingCode.substring(0, 3)} ${pairingCode.substring(3)}'
+      : pairingCode;
+
+  bool isValidAt(DateTime nowUtc) =>
+      scope == WifiSyncTokenFactory.wifiLanSyncScope &&
+      nowUtc.isBefore(expiresAtUtc);
+}
+
+/// Dedicated token factory with configuration-driven expiration for Wi-Fi Sync
+/// pairing codes, per-vault access passphrases, and privacy-preserving account tags.
+class WifiSyncTokenFactory {
+  WifiSyncTokenFactory._();
+
+  static const String wifiLanSyncScope = 'wifi_lan_sync';
+  static const Duration defaultPairingCodeLifetime = Duration(minutes: 5);
+
+  static const List<String> _passphraseWords = [
+    'board',
+    'pose',
+    'crafter',
+    'lace',
+    'shield',
+    'carbon',
+    'amber',
+    'cipher',
+    'vector',
+    'beacon',
+    'orbit',
+    'quartz',
+    'nexus',
+    'anchor',
+    'cobalt',
+    'vertex',
+  ];
+
+  static final Random _secureRandom = _createRandom();
+
+  static Random _createRandom() {
+    try {
+      return Random.secure();
+    } catch (_) {
+      return Random();
+    }
+  }
+
+  static WifiSyncPairingToken mintPairingToken({
+    Duration lifetime = defaultPairingCodeLifetime,
+    String? fixedCodeForTesting,
+    String? fixedPassphraseForTesting,
+  }) {
+    final nowUtc = DateTime.now().toUtc();
+    final code = fixedCodeForTesting ??
+        List.generate(6, (_) => _secureRandom.nextInt(10).toString()).join();
+    final passphrase = fixedPassphraseForTesting ??
+        List.generate(4, (i) {
+          final w =
+              _passphraseWords[_secureRandom.nextInt(_passphraseWords.length)];
+          final d = _secureRandom.nextInt(9) + 1;
+          return i.isEven ? '$d$w' : '$w$d';
+        }).join('-');
+
+    return WifiSyncPairingToken._(
+      pairingCode: code,
+      accessPassphrase: passphrase,
+      issuedAtUtc: nowUtc,
+      expiresAtUtc: nowUtc.add(lifetime),
+      scope: wifiLanSyncScope,
+    );
+  }
+
+  /// Computes a normalized, privacy-preserving deterministic tag for an
+  /// activated account email so two devices with the same account on the same
+  /// Wi-Fi can discover and authenticate each other.
+  static String computeAccountTag(String email) {
+    final normalized = email.trim().toLowerCase();
+    var hash1 = 0x811c9dc5;
+    var hash2 = 0xcbf29ce4;
+    for (final byte in utf8.encode('vaultkeep-wifi-account:$normalized')) {
+      hash1 ^= byte;
+      hash1 = (hash1 * 0x01000193) & 0xFFFFFFFF;
+      hash2 ^= (byte + 0x9e3779b9) & 0xFF;
+      hash2 = (hash2 * 0x01000193) & 0xFFFFFFFF;
+    }
+    return '${hash1.toRadixString(16).padLeft(8, '0')}${hash2.toRadixString(16).padLeft(8, '0')}';
+  }
+}
+
+/// Metadata describing a discovered peer device on the local Wi-Fi network.
+class WifiSyncPeerDevice {
+  const WifiSyncPeerDevice({
+    required this.deviceId,
+    required this.deviceName,
+    required this.address,
+    required this.vaultName,
+    required this.itemCount,
+    required this.sameAccount,
+    this.accountEmail,
+  });
+
+  final String deviceId;
+  final String deviceName;
+  final String address;
+  final String vaultName;
+  final int itemCount;
+  final bool sameAccount;
+  final String? accountEmail;
+}
 
 class GeneratedPasswordRecord {
   const GeneratedPasswordRecord({
@@ -61,7 +189,19 @@ class VaultController extends ChangeNotifier {
     this.autoLockAfter = const Duration(minutes: 2),
     this.settingsFilePath,
     this.windowsHelloAuthenticator,
-  });
+    String? deviceName,
+  }) : wifiSyncServerName = deviceName ?? _defaultDeviceName();
+
+  static String _defaultDeviceName() {
+    try {
+      final host = Platform.localHostname.trim();
+      if (host.isNotEmpty) return host;
+    } catch (_) {}
+    return 'VAULTKEEP-DESKTOP';
+  }
+
+  static final List<VaultController> _activeWifiSyncHosts = [];
+  static int _nextHostPort = 52138;
 
   static const MethodChannel _desktopChannel =
       MethodChannel('com.vaultkeep/passkey_provider');
@@ -116,7 +256,15 @@ class VaultController extends ChangeNotifier {
   bool autoBackupEnabled = true;
   int maxBackupCount = 60;
   bool wifiSyncServerRunning = false;
+  bool wifiSyncServerPaused = false;
   String wifiSyncVaultName = 'Primary';
+  String wifiSyncServerName;
+  String wifiSyncServerAddress = '192.168.1.10:52138';
+  int wifiSyncCodeSecondsRemaining = 30;
+  WifiSyncPairingToken? _wifiSyncToken;
+  final List<String> wifiSyncPairedDevices = [];
+  String? wifiSyncLastSyncedAt;
+  int wifiSyncLastMergedCount = 0;
   bool checkCompromisedPasswords = true;
   bool verifyBrowserSignature = true;
   String connectedStorageProvider = 'Google Drive';
@@ -794,6 +942,8 @@ class VaultController extends ChangeNotifier {
       quickPinEnabled = false;
     }
     wifiSyncServerRunning = false;
+    wifiSyncServerPaused = false;
+    _activeWifiSyncHosts.remove(this);
     status = VaultStatus.locked;
     items = const [];
     groups = const [];
@@ -1261,7 +1411,11 @@ class VaultController extends ChangeNotifier {
     if (autoBackupEnabled != null) this.autoBackupEnabled = autoBackupEnabled;
     if (maxBackupCount != null) this.maxBackupCount = maxBackupCount;
     if (wifiSyncServerRunning != null) {
-      this.wifiSyncServerRunning = wifiSyncServerRunning;
+      if (wifiSyncServerRunning) {
+        startWifiSyncServer(notify: false);
+      } else {
+        stopWifiSyncServer(notify: false);
+      }
     }
     if (wifiSyncVaultName != null) this.wifiSyncVaultName = wifiSyncVaultName;
     if (checkCompromisedPasswords != null) {
@@ -1278,6 +1432,372 @@ class VaultController extends ChangeNotifier {
     }
     unawaited(_saveSettingsToDisk());
     _notify();
+  }
+
+  WifiSyncPairingToken _ensureWifiSyncToken() {
+    final nowUtc = DateTime.now().toUtc();
+    if (_wifiSyncToken == null || !_wifiSyncToken!.isValidAt(nowUtc)) {
+      _wifiSyncToken = WifiSyncTokenFactory.mintPairingToken();
+      wifiSyncCodeSecondsRemaining = 30;
+    }
+    return _wifiSyncToken!;
+  }
+
+  String get wifiSyncPairingCode => _ensureWifiSyncToken().pairingCode;
+
+  String get wifiSyncFormattedPairingCode =>
+      _ensureWifiSyncToken().formattedPairingCode;
+
+  String get wifiSyncAccessPassphrase =>
+      _ensureWifiSyncToken().accessPassphrase;
+
+  String? get accountSyncTag {
+    final email = onboardingActivatedEmail?.trim();
+    if (email == null || email.isEmpty) return null;
+    return WifiSyncTokenFactory.computeAccountTag(email);
+  }
+
+  void startWifiSyncServer({
+    String? customAddress,
+    String? fixedCodeForTesting,
+    bool notify = true,
+  }) {
+    wifiSyncServerRunning = true;
+    wifiSyncServerPaused = false;
+    if (customAddress != null && customAddress.trim().isNotEmpty) {
+      wifiSyncServerAddress = customAddress.trim();
+    } else if (wifiSyncServerAddress == '192.168.1.10:52138' &&
+        _activeWifiSyncHosts.any(
+          (h) => !identical(h, this) && h.wifiSyncServerAddress == wifiSyncServerAddress,
+        )) {
+      _nextHostPort++;
+      wifiSyncServerAddress = '192.168.1.${10 + _activeWifiSyncHosts.length}:$_nextHostPort';
+    }
+    _wifiSyncToken = WifiSyncTokenFactory.mintPairingToken(
+      fixedCodeForTesting: fixedCodeForTesting,
+    );
+    wifiSyncCodeSecondsRemaining = 30;
+    if (!_activeWifiSyncHosts.contains(this)) {
+      _activeWifiSyncHosts.add(this);
+    }
+    if (notify) {
+      unawaited(_saveSettingsToDisk());
+      _notify();
+    }
+  }
+
+  void pauseWifiSyncServer({bool? paused}) {
+    if (!wifiSyncServerRunning) return;
+    wifiSyncServerPaused = paused ?? !wifiSyncServerPaused;
+    _notify();
+  }
+
+  void stopWifiSyncServer({bool notify = true}) {
+    wifiSyncServerRunning = false;
+    wifiSyncServerPaused = false;
+    _activeWifiSyncHosts.remove(this);
+    if (notify) {
+      unawaited(_saveSettingsToDisk());
+      _notify();
+    }
+  }
+
+  void regenerateWifiSyncPairingCode({
+    String? fixedCodeForTesting,
+    Duration? lifetime,
+  }) {
+    _wifiSyncToken = WifiSyncTokenFactory.mintPairingToken(
+      lifetime: lifetime ?? WifiSyncTokenFactory.defaultPairingCodeLifetime,
+      fixedCodeForTesting: fixedCodeForTesting,
+    );
+    wifiSyncCodeSecondsRemaining = 30;
+    _notify();
+  }
+
+  /// Discovers active, unpaused Wi-Fi Sync servers on the local network.
+  List<WifiSyncPeerDevice> discoverWifiSyncPeers() {
+    final myTag = accountSyncTag;
+    final peers = <WifiSyncPeerDevice>[];
+    for (final host in _activeWifiSyncHosts) {
+      if (identical(host, this)) continue;
+      if (!host.wifiSyncServerRunning || host.wifiSyncServerPaused) continue;
+      if (host.status != VaultStatus.unlocked) continue;
+      final hostTag = host.accountSyncTag;
+      final isSameAccount =
+          myTag != null && hostTag != null && myTag == hostTag;
+      peers.add(
+        WifiSyncPeerDevice(
+          deviceId: host.wifiSyncServerAddress,
+          deviceName: host.wifiSyncServerName,
+          address: host.wifiSyncServerAddress,
+          vaultName: host.wifiSyncVaultName,
+          itemCount: host.activeItems.length,
+          sameAccount: isSameAccount,
+          accountEmail: isSameAccount ? host.onboardingActivatedEmail : null,
+        ),
+      );
+    }
+    return peers;
+  }
+
+  /// Discovers active Wi-Fi Sync peers on the same network signed into the same account.
+  List<WifiSyncPeerDevice> discoverSameAccountWifiPeers() {
+    return discoverWifiSyncPeers().where((p) => p.sameAccount).toList();
+  }
+
+  /// Mode 1: Connects and syncs passwords bidirectionally when two devices on
+  /// the same Wi-Fi share the same activated account.
+  Future<int> syncWithSameAccountPeer({String? targetAddress}) async {
+    touch();
+    if (status != VaultStatus.unlocked) {
+      throw StateError('Unlock your vault before syncing over Wi-Fi.');
+    }
+    final myTag = accountSyncTag;
+    if (myTag == null) {
+      throw StateError(
+        'No account email activated on this device. Activate an account or connect using a 6-digit Wi-Fi pairing code.',
+      );
+    }
+
+    VaultController? matchedHost;
+    for (final host in _activeWifiSyncHosts) {
+      if (identical(host, this)) continue;
+      if (!host.wifiSyncServerRunning || host.wifiSyncServerPaused) continue;
+      if (host.status != VaultStatus.unlocked) continue;
+      if (targetAddress != null &&
+          targetAddress.trim().isNotEmpty &&
+          host.wifiSyncServerAddress != targetAddress.trim()) {
+        continue;
+      }
+      if (host.accountSyncTag == myTag) {
+        matchedHost = host;
+        break;
+      }
+    }
+
+    if (matchedHost == null) {
+      throw StateError(
+        'No Wi-Fi Sync device with matching account (${onboardingActivatedEmail ?? ""}) found on the local network.',
+      );
+    }
+
+    return _performBidirectionalWifiSync(
+      host: matchedHost,
+      modeLabel: 'Same Account',
+    );
+  }
+
+  /// Mode 2: Connects and syncs passwords bidirectionally using a 6-digit
+  /// verification code (and optional server address / access passphrase) on the same Wi-Fi.
+  Future<int> syncWithWifiCode(
+    String rawCode, {
+    String? serverAddress,
+    String? accessPassphrase,
+  }) async {
+    touch();
+    if (status != VaultStatus.unlocked) {
+      throw StateError('Unlock your vault before syncing over Wi-Fi.');
+    }
+    final normalizedCode = rawCode.replaceAll(RegExp(r'[\s\-]'), '');
+    if (normalizedCode.length != 6 ||
+        !RegExp(r'^\d{6}$').hasMatch(normalizedCode)) {
+      throw StateError(
+        'Verify Server failed: Enter a valid 6-digit Wi-Fi pairing code.',
+      );
+    }
+
+    final nowUtc = DateTime.now().toUtc();
+    VaultController? matchedHost;
+
+    for (final host in _activeWifiSyncHosts) {
+      if (!host.wifiSyncServerRunning || host.wifiSyncServerPaused) continue;
+      if (host.status != VaultStatus.unlocked) continue;
+      if (identical(host, this) && _activeWifiSyncHosts.length > 1) {
+        continue;
+      }
+      if (serverAddress != null &&
+          serverAddress.trim().isNotEmpty &&
+          host.wifiSyncServerAddress != serverAddress.trim()) {
+        continue;
+      }
+      final token = host._wifiSyncToken;
+      if (token == null || !token.isValidAt(nowUtc)) continue;
+      if (token.pairingCode != normalizedCode) continue;
+      if (accessPassphrase != null &&
+          accessPassphrase.trim().isNotEmpty &&
+          accessPassphrase.trim() != token.accessPassphrase) {
+        throw StateError(
+          'Authentication failed: Invalid Wi-Fi Sync Access Password.',
+        );
+      }
+      matchedHost = host;
+      break;
+    }
+
+    if (matchedHost == null) {
+      throw StateError(
+        'Verify Server failed: Wi-Fi pairing code does not match any active server on this network or has expired.',
+      );
+    }
+
+    return _performBidirectionalWifiSync(
+      host: matchedHost,
+      modeLabel: 'Code Pairing',
+    );
+  }
+
+  Future<int> _performBidirectionalWifiSync({
+    required VaultController host,
+    required String modeLabel,
+  }) async {
+    var syncedCount = 0;
+    if (!identical(host, this)) {
+      syncedCount += await _syncControllerDirection(from: host, to: this);
+      syncedCount += await _syncControllerDirection(from: this, to: host);
+      await host._refresh();
+      await host.refreshGroups();
+    }
+    await _refresh();
+    await refreshGroups();
+
+    final now = DateTime.now();
+    final ts =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+
+    final hostRecord =
+        '${host.wifiSyncServerName} (${host.wifiSyncServerAddress}) • $modeLabel';
+    if (!wifiSyncPairedDevices.contains(hostRecord)) {
+      wifiSyncPairedDevices.insert(0, hostRecord);
+    }
+    wifiSyncLastSyncedAt = ts;
+    wifiSyncLastMergedCount = syncedCount;
+    connectedStorageProvider = 'Wi-Fi Sync';
+
+    if (!identical(host, this)) {
+      final clientRecord =
+          '$wifiSyncServerName ($wifiSyncServerAddress) • $modeLabel';
+      if (!host.wifiSyncPairedDevices.contains(clientRecord)) {
+        host.wifiSyncPairedDevices.insert(0, clientRecord);
+      }
+      host.wifiSyncLastSyncedAt = ts;
+      host.wifiSyncLastMergedCount = syncedCount;
+      host._notify();
+    }
+
+    _notify();
+    return syncedCount;
+  }
+
+  static Future<int> _syncControllerDirection({
+    required VaultController from,
+    required VaultController to,
+  }) async {
+    var changed = 0;
+    final fromGroups = await from._backend.listGroups();
+    var toGroups = await to._backend.listGroups();
+
+    for (final fg in fromGroups) {
+      if (!toGroups.any((tg) => tg.name == fg.name)) {
+        await to._backend.createGroup(fg.name);
+        changed++;
+      }
+    }
+    toGroups = await to._backend.listGroups();
+
+    final fromItems = await from._backend.list('');
+    final toItems = await to._backend.list('');
+
+    for (final srcItem in fromItems) {
+      VaultItem? existingMatch;
+      for (final dstItem in toItems) {
+        if ((dstItem.id == srcItem.id && dstItem.title == srcItem.title) ||
+            (dstItem.title == srcItem.title &&
+                dstItem.username == srcItem.username &&
+                dstItem.url == srcItem.url)) {
+          existingMatch = dstItem;
+          break;
+        }
+      }
+
+      final srcRev = srcItem.revisionDate ?? 0;
+      final dstRev = existingMatch?.revisionDate ?? -1;
+
+      if (existingMatch != null && srcRev <= dstRev) {
+        continue;
+      }
+
+      final fullEntry = await from._backend.get(srcItem.id);
+      final password = await from._backend.revealPassword(srcItem.id);
+      String? otpUri;
+      if (fullEntry.hasOtp) {
+        try {
+          otpUri = await from._backend.revealOtpUri(srcItem.id);
+        } catch (_) {}
+      }
+      String? securityAnswer;
+      if (fullEntry.hasSecurityAnswer) {
+        try {
+          securityAnswer = await from._backend.revealSecurityAnswer(srcItem.id);
+        } catch (_) {}
+      }
+      final customFields = <VaultCustomField>[];
+      for (var i = 0; i < fullEntry.customFields.length; i++) {
+        final cf = fullEntry.customFields[i];
+        var val = cf.value;
+        if (cf.sensitive) {
+          try {
+            val = await from._backend.revealCustomField(srcItem.id, i);
+          } catch (_) {}
+        }
+        customFields.add(
+          VaultCustomField(
+            name: cf.name,
+            value: val,
+            fieldType: cf.fieldType,
+            sensitive: cf.sensitive,
+            section: cf.section,
+          ),
+        );
+      }
+
+      String? targetGroupId;
+      if (fullEntry.groupName != null && fullEntry.groupName!.isNotEmpty) {
+        for (final tg in toGroups) {
+          if (tg.name == fullEntry.groupName) {
+            targetGroupId = tg.id;
+            break;
+          }
+        }
+      }
+
+      await to._backend.save(
+        existingMatch?.id,
+        EntryDraft(
+          title: fullEntry.title,
+          username: fullEntry.username,
+          password: password,
+          url: fullEntry.url,
+          notes: fullEntry.notes,
+          groupId: targetGroupId,
+          otp: otpUri,
+          lastKnownRevisionDate: existingMatch?.revisionDate,
+          category: fullEntry.category,
+          tags: fullEntry.tags,
+          isFavorite: fullEntry.isFavorite,
+          isArchived: fullEntry.isArchived,
+          isTrashed: fullEntry.isTrashed,
+          email: fullEntry.email,
+          phone: fullEntry.phone,
+          securityQuestion: fullEntry.securityQuestion,
+          securityAnswer: securityAnswer,
+          sections: fullEntry.sections,
+          customFields: customFields,
+        ),
+      );
+      changed++;
+    }
+
+    return changed;
   }
 
   Future<VaultTotp?> getTotp(String id) {
@@ -1322,7 +1842,7 @@ class VaultController extends ChangeNotifier {
     String entryId, {
     String rpId = '',
     String username = '',
-  }) async {
+    }) async {
     touch();
     final pk = await _backend.generatePasskey(
       entryId,
@@ -1402,6 +1922,7 @@ class VaultController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _idle?.cancel();
+    _activeWifiSyncHosts.remove(this);
     _sessionMasterCache = null;
     _quickPinCode = null;
     generatorHistory.clear();

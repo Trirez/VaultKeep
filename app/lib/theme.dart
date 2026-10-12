@@ -37,6 +37,25 @@ class TacticalTheme {
   static Color get borderTech =>
       isLight ? const Color(0xFFCBD5E1) : const Color(0xFF2E354A);
   static Color get borderFocus => amberPrimary;
+  static Color get hoverBorderColor =>
+      amberPrimary.withValues(alpha: isLight ? 0.65 : 0.72);
+
+  /// Subtle text glow shadows applied when hovering interactive options.
+  static List<Shadow> get textGlow => [
+        Shadow(
+          color: amberBright.withValues(alpha: isLight ? 0.45 : 0.75),
+          blurRadius: 8,
+        ),
+      ];
+
+  /// Subtle outer box-shadow glow applied to hovered option borders.
+  static List<BoxShadow> get borderGlow => [
+        BoxShadow(
+          color: amberPrimary.withValues(alpha: isLight ? 0.18 : 0.28),
+          blurRadius: 6,
+          spreadRadius: 0.5,
+        ),
+      ];
 
   // Tactical Accents
   static Color get amberPrimary {
@@ -275,6 +294,20 @@ class TacticalTheme {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(4),
           ),
+        ).copyWith(
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.hovered)) {
+              return BorderSide(color: amberBright, width: 1);
+            }
+            return const BorderSide(color: Colors.transparent, width: 1);
+          }),
+          textStyle: WidgetStateProperty.resolveWith((states) {
+            return TextStyle(
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.5,
+              shadows: states.contains(WidgetState.hovered) ? textGlow : null,
+            );
+          }),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
@@ -285,6 +318,50 @@ class TacticalTheme {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(4),
           ),
+        ).copyWith(
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.hovered)) {
+              return BorderSide(color: hoverBorderColor, width: 1);
+            }
+            return BorderSide(color: borderTech, width: 1);
+          }),
+          foregroundColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.hovered)) {
+              return amberBright;
+            }
+            return textPrimary;
+          }),
+          textStyle: WidgetStateProperty.resolveWith((states) {
+            return TextStyle(
+              shadows: states.contains(WidgetState.hovered) ? textGlow : null,
+            );
+          }),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: textPrimary,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(4),
+          ),
+        ).copyWith(
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.hovered)) {
+              return BorderSide(color: hoverBorderColor, width: 1);
+            }
+            return const BorderSide(color: Colors.transparent, width: 1);
+          }),
+          foregroundColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.hovered)) {
+              return amberBright;
+            }
+            return textPrimary;
+          }),
+          textStyle: WidgetStateProperty.resolveWith((states) {
+            return TextStyle(
+              shadows: states.contains(WidgetState.hovered) ? textGlow : null,
+            );
+          }),
         ),
       ),
       chipTheme: ChipThemeData(
@@ -424,7 +501,7 @@ class TacticalDomainAvatar extends StatelessWidget {
 }
 
 /// Tactical square action icon button used in credential rows and headers.
-class TacticalActionSquare extends StatelessWidget {
+class TacticalActionSquare extends StatefulWidget {
   const TacticalActionSquare({
     super.key,
     required this.icon,
@@ -441,21 +518,41 @@ class TacticalActionSquare extends StatelessWidget {
   final double size;
 
   @override
+  State<TacticalActionSquare> createState() => _TacticalActionSquareState();
+}
+
+class _TacticalActionSquareState extends State<TacticalActionSquare> {
+  bool _hovered = false;
+
+  @override
   Widget build(BuildContext context) {
+    final baseColor = widget.color ?? TacticalTheme.cyanTactical;
     return Tooltip(
-      message: tooltip,
+      message: widget.tooltip,
       child: InkWell(
-        onTap: onPressed,
+        onTap: widget.onPressed,
+        onHover: (v) => setState(() => _hovered = v),
         borderRadius: BorderRadius.circular(4),
         child: Container(
-          width: size,
-          height: size,
+          width: widget.size,
+          height: widget.size,
           decoration: BoxDecoration(
-            color: TacticalTheme.bgElevated,
+            color: _hovered ? TacticalTheme.bgHover : TacticalTheme.bgElevated,
             borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: TacticalTheme.borderTech, width: 1),
+            border: Border.all(
+              color: _hovered
+                  ? TacticalTheme.hoverBorderColor
+                  : TacticalTheme.borderTech,
+              width: 1,
+            ),
+            boxShadow: _hovered ? TacticalTheme.borderGlow : null,
           ),
-          child: Icon(icon, size: 15, color: color ?? TacticalTheme.cyanTactical),
+          child: Icon(
+            widget.icon,
+            size: 15,
+            color: _hovered ? TacticalTheme.amberBright : baseColor,
+            shadows: _hovered ? TacticalTheme.textGlow : null,
+          ),
         ),
       ),
     );
